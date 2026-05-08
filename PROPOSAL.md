@@ -1,23 +1,23 @@
-# Proposal Kolaborasi: Shelby X Axel
+# Collaboration Proposal: Shelby X Axel
 
-**Kepada: Tim Shelby**
-**Dari: Axel Team**
+**To: The Shelby Team**
+**From: Axel Team**
 
-## Ringkasan Proyek
-Kami telah mengembangkan **Shelby X Axel**, sebuah dashboard penyimpanan data terdesentralisasi (Hot Storage) yang dibangun di atas blockchain Aptos. Proyek ini bukan sekadar antarmuka penyimpanan, melainkan ekosistem data real-time yang mengutamakan kecepatan dan pengalaman pengguna premium.
+## Project Overview
+We have developed **Shelby X Axel**, a decentralized hot storage and data-sharing dashboard built on the Aptos blockchain. This project is more than just a storage interface; it is a real-time data ecosystem prioritizing speed, security, and a premium user experience.
 
-## Keunggulan Teknis
-Kami sangat serius dalam membangun infrastruktur yang stabil dan scalable:
-- **Optimasi Aptos JS-Pro SDK**: Implementasi SDK terbaru untuk performa transaksi yang maksimal.
-- **Irys Web Integration**: Migrasi penuh ke `@irys/web-upload` untuk memastikan proses upload terdesentralisasi yang bebas error langsung dari browser.
-- **Stabilitas Multi-Device**: Sistem koneksi wallet yang robust dengan fitur `autoConnect` dan UI yang sepenuhnya responsif (Mobile, Tablet, Desktop, hingga Vertical Monitor).
-- **Aset Premium**: Desain visual futuristik dengan efek Glassmorphism dan animasi 3D Hyperspeed.
+## Technical Excellence
+Our commitment to building a robust and scalable infrastructure is reflected in our implementation:
+- **Aptos JS-Pro SDK Optimization**: Leveraging the latest SDK for high-performance transaction handling and state management.
+- **Irys Web Integration**: Full migration to `@irys/web-upload` to ensure error-free, browser-based decentralized file storage.
+- **Multi-Device Stability**: A resilient wallet connection system featuring `autoConnect` and a fully responsive UI (optimized for Mobile, Tablet, Desktop, and Vertical monitors).
+- **Premium Aesthetics**: A futuristic visual identity using Glassmorphism and high-performance 3D animations (Hyperspeed).
 
-## Nilai Tambah Unik: Fitur Monetisasi
-Salah satu fitur unggulan kami adalah **On-Chain Paywall**. Pengguna dapat mengunci file mereka dan menetapkan harga dalam APT. Akses hanya diberikan setelah verifikasi pembayaran berhasil dilakukan secara on-chain, memberikan use-case nyata bagi kreator di ekosistem Aptos.
+## Unique Value Proposition: On-Chain Paywall
+A key differentiator of our platform is the **On-Chain Paywall** feature. Users can lock their files and set a custom price in APT. Access is granted only after payment verification is confirmed on-chain, providing a concrete use case for creators and data providers within the Aptos ecosystem.
 
-## Komitmen Kami
-Kami memiliki visi yang sejalan dengan Shelby dalam mendorong adopsi massal penyimpanan terdesentralisasi di Aptos. Kami sangat bersemangat dan serius untuk bergabung/berkolaborasi lebih jauh dengan tim Shelby guna memperkuat ekosistem ini bersama-sama.
+## Our Commitment
+Our vision aligns perfectly with Shelby’s goal of driving mass adoption of decentralized storage on Aptos. We are highly motivated and serious about joining or collaborating further with the Shelby team to strengthen the ecosystem together.
 
 ---
 **Axel Team**
