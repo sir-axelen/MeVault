@@ -3,7 +3,10 @@
 import { useState, useRef, useEffect } from "react";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { Aptos as AptosClient, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { useAptBalance, useSignAndSubmitTransaction } from "@aptos-labs/react";
+import { WebUploader } from "@irys/web-upload";
+import { WebAptos } from "@irys/web-upload-aptos";
 
 type FileRecord = {
   name: string;
@@ -13,7 +16,11 @@ type FileRecord = {
 };
 
 export default function Dashboard() {
-  const { connected, account, connect, disconnect, isLoading, signAndSubmitTransaction } = useWallet();
+  const { connected, account, wallet, connect, disconnect, isLoading: walletLoading } = useWallet();
+  const { data: aptBalance, isLoading: balanceLoading } = useAptBalance();
+  const { signAndSubmitTransaction } = useSignAndSubmitTransaction();
+  const isLoading = walletLoading || balanceLoading;
+
   const addressString = account?.address?.toString() || "";
   const address = addressString ? `${addressString.slice(0, 6)}...${addressString.slice(-4)}` : "";
   const [files, setFiles] = useState<FileRecord[]>([]);
@@ -40,24 +47,12 @@ export default function Dashboard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const fetchBalance = async () => {
-      try {
-        const aptosConfig = new AptosConfig({ network: Network.TESTNET });
-        const aptos = new Aptos(aptosConfig);
-        const devWallet = "0x9cf5cbfa7d68e8278bcca7e36dadcb51ae973821400a52d066cd9e8803147c62";
-        const resource = await aptos.getAccountResource({
-          accountAddress: devWallet,
-          resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>"
-        });
-        const balance = (Number((resource as any).coin.value) / 100000000).toFixed(2);
-        setAptEarned(`+${balance}`);
-      } catch (e) {
-        console.error("Failed to fetch balance", e);
-        setAptEarned("+10.00");
-      }
-    };
-    fetchBalance();
-  }, []);
+    if (aptBalance) {
+      setAptEarned(`+${(Number(aptBalance) / 100000000).toFixed(2)}`);
+    } else {
+      setAptEarned("+0.00");
+    }
+  }, [aptBalance]);
 
   useEffect(() => {
     const saved = localStorage.getItem("shelby_files");
@@ -92,9 +87,17 @@ export default function Dashboard() {
     localStorage.setItem("shelby_hide_guide", "true");
   };
 
-  const connectWallet = () => {
+  const connectWallet = async () => {
     if (!connected) {
-      connect("Petra");
+      try {
+        await connect("Petra");
+      } catch (err: any) {
+        if (err.name === "WalletNotReadyError" || err.name === "WalletNotFoundError") {
+          alert("Petra Wallet not found. Please install the extension or open this site inside the Petra mobile app browser.");
+        } else {
+          console.error("Connection error:", err);
+        }
+      }
     } else {
       disconnect();
     }
@@ -160,52 +163,35 @@ export default function Dashboard() {
   };
 
   const startUpload = async () => {
-    if (!currentFile || uploading) return;
+    if (!currentFile || uploading || !wallet) return;
     setUploading(true);
     setShowShare(false);
     setProgressPct(0);
-    setProgressLabel("Uploading to IPFS via Pinata…");
-
-    // Start a fake progress interval to show activity
-    let pct = 0;
-    const interval = setInterval(() => {
-      pct += Math.random() * 5 + 1;
-      if (pct >= 90) pct = 90; // Cap at 90% until actually done
-      setProgressPct(pct);
-    }, 200);
+    setProgressLabel("Initializing Aptos Storage (Irys)…");
 
     try {
-      const formData = new FormData();
-      formData.append("file", currentFile);
-
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await res.json();
+      // 1. Initialize Irys with the Aptos wallet
+      const irys = await WebUploader(WebAptos).withProvider(wallet);
       
-      clearInterval(interval);
-      
-      if (!res.ok) {
-        alert(data.error || "Upload failed. Is PINATA_JWT set in .env.local?");
-        setUploading(false);
-        setProgressPct(0);
-        return;
-      }
+      setProgressLabel("Uploading to Decentralized Storage…");
+      setProgressPct(30);
 
+      // 2. Upload the file
+      // For demonstration, we use the free tier if file is small, 
+      // or it will prompt for payment if larger.
+      const receipt = await irys.uploadFile(currentFile);
+      
       setProgressPct(100);
-      setProgressLabel("Upload complete!");
+      setProgressLabel("Aptos Storage Complete!");
       
       // Delay slightly for UX before showing the share link
       setTimeout(() => {
-        finishUpload(data.ipfsHash);
+        finishUpload(receipt.id);
       }, 500);
       
-    } catch (err) {
-      clearInterval(interval);
+    } catch (err: any) {
       console.error(err);
-      alert("An error occurred during upload.");
+      alert(err.message || "An error occurred during decentralized upload.");
       setUploading(false);
       setProgressPct(0);
     }
@@ -214,7 +200,7 @@ export default function Dashboard() {
   const finishUpload = (ipfsHash: string) => {
     if (!currentFile) return;
     
-    // Create a link to our own file viewer with the IPFS CID
+    // Create a link to our own file viewer with the Irys Hash
     const baseUrl = window.location.origin;
     const link = `${baseUrl}/file/${ipfsHash}`;
     
@@ -295,25 +281,26 @@ export default function Dashboard() {
     <>
       <nav className="glass sticky top-0 z-50 border-t-0 border-l-0 border-r-0">
         <div className="max-w-4xl mx-auto px-5 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 overflow-hidden">
             <div
               style={{
-                width: "28px",
-                height: "28px",
-                borderRadius: "7px",
+                width: "24px",
+                height: "24px",
+                borderRadius: "6px",
                 overflow: "hidden",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 background: "#1f2937",
+                flexShrink: 0,
               }}
             >
               <img src="/axel.png" alt="Axel" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
-            <span className="font-bold text-white text-sm tracking-tight" style={{ fontFamily: 'var(--font-space-mono)' }}>
+            <span className="font-bold text-white text-xs sm:text-sm tracking-tight whitespace-nowrap" style={{ fontFamily: 'var(--font-space-mono)' }}>
               shelby X axel
             </span>
-            <span className="tag hidden sm:inline-block" style={{ fontFamily: 'var(--font-space-mono)' }}>APTOS</span>
+            <span className="tag hidden md:inline-block" style={{ fontFamily: 'var(--font-space-mono)' }}>APTOS</span>
           </div>
           <div className="flex items-center gap-3">
             <span
@@ -390,7 +377,7 @@ export default function Dashboard() {
                     <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>2</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Upload File</h3>
-                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Drag and drop any file. It will be securely stored on IPFS via Pinata.</p>
+                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Drag and drop any file. It will be securely stored on Aptos via Irys.</p>
                 </div>
                 <div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)" }}>
@@ -736,21 +723,21 @@ export default function Dashboard() {
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-2 justify-end">
                       <button
-                        className="btn-ghost px-3 py-1.5 rounded-lg text-xs"
+                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
                         onClick={() => window.open(f.link)}
                       >
                         Open
                       </button>
                       <button
-                        className="btn-ghost px-3 py-1.5 rounded-lg text-xs"
+                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
                         onClick={() => copyRowLink(f.link, i)}
                       >
                         {copiedRows[i] ? "Copied!" : "Copy Link"}
                       </button>
                       <button
-                        className="btn-ghost px-3 py-1.5 rounded-lg text-xs"
+                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
                         style={{ color: "#ef4444" }}
                         onClick={() => deleteFile(i)}
                       >

@@ -3,9 +3,13 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { motion } from "framer-motion";
+import { useAptBalance, useSignAndSubmitTransaction, useViewModule } from "@aptos-labs/react";
 
 export default function FileDownloadPage({ params }: { params: { hash: string } }) {
-  const { connected, account, connect, disconnect, isLoading, signAndSubmitTransaction } = useWallet();
+  const { connected, account, connect, disconnect, isLoading: walletLoading } = useWallet();
+  const { signAndSubmitTransaction, isLoading: transactionLoading } = useSignAndSubmitTransaction();
+  const isLoading = walletLoading || transactionLoading;
+
   const addressString = account?.address?.toString() || "";
   const address = addressString ? `${addressString.slice(0, 6)}...${addressString.slice(-4)}` : "";
 
@@ -135,7 +139,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string } 
             {fileData.name}
           </h1>
           <p className="text-sm mb-6" style={{ color: "var(--shelby-muted)" }}>
-            {fileData.size} • Stored on Shelby Network
+            {fileData.size} • Stored on Aptos Decentralized Storage
           </p>
 
           <div className="p-4 rounded-xl mb-8" style={{ background: "rgba(0,0,0,0.2)", border: "1px solid var(--shelby-border)" }}>
@@ -187,8 +191,8 @@ export default function FileDownloadPage({ params }: { params: { hash: string } 
             <button
               className="w-full py-3 rounded-xl text-sm mb-3 font-semibold"
               onClick={() => {
-                const gateway = process.env.NEXT_PUBLIC_GATEWAY_URL || "https://gateway.pinata.cloud";
-                window.open(`${gateway}/ipfs/${params.hash}`, "_blank");
+                const gateway = "https://gateway.irys.xyz";
+                window.open(`${gateway}/${params.hash}`, "_blank");
               }}
               style={{
                 background: "rgba(0,255,148,0.1)",

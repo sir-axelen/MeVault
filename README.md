@@ -4,12 +4,11 @@ Shelby Protocol is a decentralized data storage and sharing dashboard built on t
 
 ## 🚀 Features
 
-- **Next.js 14** Framework with App Router & Server Components
-- **Aptos Wallet Integration**: Connect seamlessly using the Petra Wallet via `@aptos-labs/wallet-adapter-react`.
-- **Smart Contract Interactivity**: Built-in support for interacting with the Shelby Move smart contracts via `@aptos-labs/ts-sdk`.
+- **Aptos JS-Pro SDK**: Built with `@aptos-labs/js-pro` and `@aptos-labs/react` for an opinionated, high-performance Aptos experience.
+- **Decentralized Storage (Irys)**: Fully integrated with the Irys network (Arweave) for permanent, decentralized file storage on Aptos.
 - **State Management**: Optimized data fetching and caching with `@tanstack/react-query`.
-- **Modern UI**: Styled efficiently with Tailwind CSS.
-- **File Upload & Sharing**: Drag-and-drop file uploads with instant link generation.
+- **Modern UI**: Styled with Vanilla CSS and Framer Motion for premium aesthetics.
+- **File Upload & Sharing**: Client-side decentralized uploads with instant link generation.
 - **Paywall Functionality**: Lock files behind APT payments for monetization.
 - **Real-time Progress**: Visual upload progress indicators.
 
