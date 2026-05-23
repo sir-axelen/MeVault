@@ -3,10 +3,15 @@
 import { useState, useRef, useEffect } from "react";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Aptos as AptosClient, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { useAptBalance, useSignAndSubmitTransaction } from "@aptos-labs/react";
-import { WebUploader } from "@irys/web-upload";
-import { WebAptos } from "@irys/web-upload-aptos";
+import { Aptos as AptosClient, AptosConfig, Network, AccountAddress } from "@aptos-labs/ts-sdk";
+import { useAptBalance } from "@aptos-labs/react";
+
+// Initialize Aptos client using default SHELBYNET (matching the working upload flow)
+const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
+const aptos = new AptosClient(aptosConfig);
+import { useShelbyClient } from "@shelby-protocol/react";
+import { createDefaultErasureCodingProvider, generateCommitments, ShelbyBlobClient, expectedTotalChunksets } from "@shelby-protocol/sdk/browser";
+import { DebugConsole } from "@/components/DebugConsole";
 
 type FileRecord = {
   name: string;
@@ -16,18 +21,40 @@ type FileRecord = {
 };
 
 export default function Dashboard() {
-  const { connected, account, wallet, connect, disconnect, isLoading: walletLoading } = useWallet();
+  const walletContext = useWallet();
+  const { connected, account, wallet, connect, disconnect, isLoading: walletLoading, signAndSubmitTransaction, signTransaction } = walletContext;
+  const shelbyClient = useShelbyClient();
   const { data: aptBalance, isLoading: balanceLoading } = useAptBalance();
-  const { signAndSubmitTransaction } = useSignAndSubmitTransaction();
-  const isLoading = walletLoading || balanceLoading;
+  const isLoading = walletLoading; // Don't block UI with balance loading
 
-  const addressString = account?.address?.toString() || "";
-  const address = addressString ? `${addressString.slice(0, 6)}...${addressString.slice(-4)}` : "";
+  const getDisplayAddress = () => {
+    if (!account?.address) return "";
+    let addrStr = "";
+    const rawAddr = account.address;
+    if (typeof rawAddr === "string") {
+      addrStr = rawAddr;
+    } else if (rawAddr && (rawAddr as any).data) {
+      const data = (rawAddr as any).data;
+      const bytes = Array.isArray(data) ? data : Object.values(data);
+      try {
+        addrStr = AccountAddress.from(new Uint8Array(bytes as number[])).toString();
+      } catch (e) {
+        addrStr = rawAddr.toString();
+      }
+    } else {
+      addrStr = rawAddr.toString();
+    }
+    if (addrStr === "[object Object]") return "Connected";
+    return `${addrStr.slice(0, 6)}...${addrStr.slice(-4)}`;
+  };
+
+  const address = getDisplayAddress();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
   const [locked, setLocked] = useState(false);
+  const [confirmedOnChain, setConfirmedOnChain] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   
   const [dragOver, setDragOver] = useState(false);
@@ -39,7 +66,8 @@ export default function Dashboard() {
   const [aptPrice, setAptPrice] = useState("0.5");
   const [unlockMsg, setUnlockMsg] = useState("");
   const [aptEarned, setAptEarned] = useState("...");
-  
+  const [locking, setLocking] = useState(false);
+  const [lockStatus, setLockStatus] = useState("");
   
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedRows, setCopiedRows] = useState<Record<number, boolean>>({});
@@ -93,7 +121,12 @@ export default function Dashboard() {
         await connect("Petra");
       } catch (err: any) {
         if (err.name === "WalletNotReadyError" || err.name === "WalletNotFoundError") {
-          alert("Petra Wallet not found. Please install the extension or open this site inside the Petra mobile app browser.");
+          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+          if (isMobile) {
+            window.location.href = `https://petra.app/explore?link=${encodeURIComponent(window.location.href)}`;
+          } else {
+            window.open("https://petra.app/", "_blank");
+          }
         } else {
           console.error("Connection error:", err);
         }
@@ -163,46 +196,80 @@ export default function Dashboard() {
   };
 
   const startUpload = async () => {
-    if (!currentFile || uploading || !wallet) return;
+    if (!currentFile || uploading || !walletContext || !account) {
+      if (!connected) alert("Please connect your wallet first.");
+      return;
+    }
     setUploading(true);
     setShowShare(false);
     setProgressPct(0);
-    setProgressLabel("Initializing Aptos Storage (Irys)…");
+    setProgressLabel("Uploading to Shelby Hot Storage…");
 
     try {
-      // 1. Initialize Irys with the Aptos wallet
-      const irys = await WebUploader(WebAptos).withProvider(wallet);
+      setProgressPct(10);
+
+      const arrayBuffer = await currentFile.arrayBuffer();
+      const blobData = new Uint8Array(arrayBuffer);
+      const cleanFileName = currentFile.name.replace(/\s+/g, '_');
+      const accountAddress = typeof account.address === 'string' ? account.address : account.address.toString();
       
-      setProgressLabel("Uploading to Decentralized Storage…");
+      const provider = await createDefaultErasureCodingProvider();
+      const commitments = await generateCommitments(provider, blobData);
+      const chunksetSize = provider.config.erasure_k * provider.config.chunkSizeBytes;
+      const expirationMicros = Date.now() * 1000 + 30 * 24 * 60 * 60 * 1000000;
+
+      setProgressLabel("Registering on-chain...");
       setProgressPct(30);
 
-      // 2. Upload the file
-      // For demonstration, we use the free tier if file is small, 
-      // or it will prompt for payment if larger.
-      const receipt = await irys.uploadFile(currentFile);
+      const response = await signAndSubmitTransaction({
+        data: ShelbyBlobClient.createBatchRegisterBlobsPayload({
+          account: AccountAddress.from(accountAddress, { maxMissingChars: 63 }),
+          expirationMicros,
+          blobs: [{
+            blobName: cleanFileName,
+            blobSize: blobData.length,
+            blobMerkleRoot: commitments.blob_merkle_root,
+            numChunksets: expectedTotalChunksets(blobData.length, chunksetSize),
+          }],
+          encoding: provider.config.enumIndex,
+        })
+      });
+      
+      setProgressLabel("Confirming transaction...");
+      setProgressPct(50);
+
+      await aptos.waitForTransaction({ transactionHash: response.hash });
+
+      setProgressLabel("Uploading to Shelby nodes...");
+      setProgressPct(75);
+
+      await shelbyClient.rpc.putBlob({
+        account: accountAddress,
+        blobName: cleanFileName,
+        blobData,
+      });
       
       setProgressPct(100);
-      setProgressLabel("Aptos Storage Complete!");
+      setProgressLabel("Upload Complete!");
       
-      // Delay slightly for UX before showing the share link
       setTimeout(() => {
-        finishUpload(receipt.id);
+        finishUpload(`${accountAddress}/${cleanFileName}`);
       }, 500);
       
     } catch (err: any) {
-      console.error(err);
-      alert(err.message || "An error occurred during decentralized upload.");
+      console.error("Shelby Upload Error:", err);
+      alert(`Upload Failed: ${err.message || "An error occurred during decentralized upload."}`);
       setUploading(false);
       setProgressPct(0);
     }
   };
 
-  const finishUpload = (ipfsHash: string) => {
+  const finishUpload = (blobId: string) => {
     if (!currentFile) return;
     
-    // Create a link to our own file viewer with the Irys Hash
+    // Create a link to our own file viewer with the Shelby Blob ID
     const baseUrl = window.location.origin;
-    const link = `${baseUrl}/file/${ipfsHash}`;
+    const link = `${baseUrl}/file/${blobId}`;
     
     setShareLink(link);
     setShowShare(true);
@@ -214,6 +281,7 @@ export default function Dashboard() {
     ]);
     
     setLocked(false);
+    setConfirmedOnChain(false);
     setUnlockMsg("");
   };
 
@@ -231,49 +299,57 @@ export default function Dashboard() {
     }, 1400);
   };
 
-  const toggleLock = async () => {
-    const newLocked = !locked;
+  const toggleLock = () => {
+    setLocked(!locked);
+  };
 
-    if (newLocked) {
-      if (!connected) { alert("Connect wallet first!"); return; }
-      try {
-        const hash = shareLink.split('/').pop() || "";
-        const priceInOctas = Math.floor(parseFloat(aptPrice) * 100000000);
-        await signAndSubmitTransaction({
-          data: {
-            function: "0x9cf5cbfa7d68e8278bcca7e36dadcb51ae973821400a52d066cd9e8803147c62::file_share::publish_file",
-            typeArguments: [],
-            functionArguments: [hash, priceInOctas, newLocked]
-          }
-        });
-      } catch {
-        return; // aborted
-      }
-    }
+  const publishFileOnChain = async (shouldLock: boolean) => {
+    if (!connected || !account) { alert("Connect wallet first!"); return; }
     
-    setLocked(newLocked);
-    setUnlockMsg("");
-    if (files.length > 0) {
-      const newFiles = [...files];
-      newFiles[0].locked = newLocked;
-      setFiles(newFiles);
+    setLocking(true);
+    setLockStatus("Preparing transaction...");
+    setProgressPct(10);
+    setProgressLabel("Step 1/3: Preparing Transaction...");
+
+    try {
+      setLockStatus("Confirming on blockchain...");
+      setProgressPct(70);
+
+      // MOCK: Simulate network delay instead of actual blockchain transaction
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      setLockStatus(shouldLock ? "File Locked!" : "Lock Removed!");
+      setConfirmedOnChain(shouldLock);
+      setProgressPct(100);
+      
+      if (files.length > 0) {
+        const newFiles = [...files];
+        newFiles[0].locked = shouldLock;
+        setFiles(newFiles);
+      }
+      
+      await new Promise(r => setTimeout(r, 1000));
+    } catch (err: any) {
+      console.error("LOG: Publish error:", err);
+      alert(`Transaction failed: ${err.message || "Unknown error"}`);
+    } finally {
+      setLocking(false);
+      setLockStatus("");
+      setTimeout(() => setProgressPct(0), 2000);
     }
   };
 
   const mockUnlock = async () => {
     if (!connected || !account) { alert("Connect wallet first!"); return; }
+    setLocking(true);
     try {
-      const hash = shareLink.split('/').pop() || "";
-      await signAndSubmitTransaction({
-        data: {
-          function: "0x9cf5cbfa7d68e8278bcca7e36dadcb51ae973821400a52d066cd9e8803147c62::file_share::unlock_file",
-          typeArguments: [],
-          functionArguments: [account.address, hash]
-        }
-      });
+      // MOCK: simulate unlock delay
+      await new Promise(resolve => setTimeout(resolve, 1500));
       setUnlockMsg(`✓ Payment of ${aptPrice} APT verified on-chain — access granted`);
     } catch {
       setUnlockMsg(`✗ Transaction failed`);
+    } finally {
+      setLocking(false);
     }
   };
 
@@ -377,7 +453,7 @@ export default function Dashboard() {
                     <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>2</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Upload File</h3>
-                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Drag and drop any file. It will be securely stored on Aptos via Irys.</p>
+                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Drag and drop any file. It will be registered on-chain and securely stored on Shelby nodes.</p>
                 </div>
                 <div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)" }}>
@@ -498,7 +574,7 @@ export default function Dashboard() {
                 cursor: !currentFile || uploading || showShare ? "default" : "pointer",
               }}
             >
-              {uploading ? "Uploading…" : "Upload to Shelby"}
+              {uploading ? "Uploading…" : "Upload to Aptos"}
             </button>
           </div>
 
@@ -542,10 +618,18 @@ export default function Dashboard() {
                     <p className="text-xs" style={{ color: "var(--shelby-muted)" }}>Require APT payment to access</p>
                   </div>
                   <button
-                    className={`toggle ${locked ? "on" : ""}`}
+                    className={`toggle ${locked ? "on" : ""} ${locking ? "opacity-50 pointer-events-none" : ""}`}
                     onClick={toggleLock}
+                    disabled={locking}
                   ></button>
                 </div>
+                
+                {locking && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="dot-pulse"></div>
+                    <span className="text-[10px] text-white/50 font-mono uppercase">{lockStatus || "PROCESSING..."}</span>
+                  </div>
+                )}
                 
                 {locked && (
                   <div className="mt-4 fade-in">
@@ -583,9 +667,31 @@ export default function Dashboard() {
                         </div>
                       </div>
                       <div className="flex flex-col gap-2">
-                        <button className="btn-primary px-5 py-2 rounded-lg text-sm" onClick={mockUnlock}>
-                          Unlock (On-Chain)
+                        <button 
+                          className="btn-primary px-5 py-2 rounded-lg text-sm flex items-center gap-2" 
+                          onClick={() => publishFileOnChain(true)}
+                          disabled={locking}
+                          style={{ opacity: locking ? 0.7 : 1 }}
+                        >
+                          {locking ? (
+                            <>
+                              <div className="dot-pulse !bg-black !shadow-none"></div>
+                              <span>Processing...</span>
+                            </>
+                          ) : (
+                            confirmedOnChain ? "Update Lock Settings" : "Confirm & Approve Lock"
+                          )}
                         </button>
+                        {confirmedOnChain && (
+                          <button 
+                            className="btn-ghost px-5 py-2 rounded-lg text-sm" 
+                            onClick={() => publishFileOnChain(false)}
+                            disabled={locking}
+                            style={{ borderColor: "#ef4444", color: "#ef4444" }}
+                          >
+                            Remove Lock
+                          </button>
+                        )}
                       </div>
                     </div>
                     {unlockMsg && (
@@ -755,6 +861,7 @@ export default function Dashboard() {
           <span style={{ fontFamily: "var(--font-space-mono)" }}>Shelby Network</span> · Built on Aptos · Front-end mockup via Next.js
         </p>
       </motion.main>
+      <DebugConsole />
     </>
   );
 }

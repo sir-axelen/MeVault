@@ -20,8 +20,6 @@ const nextConfig = {
         tls: false,
         crypto: false,
         stream: false,
-        http: false,
-        https: false,
         zlib: false,
         url: false,
         buffer: false,
