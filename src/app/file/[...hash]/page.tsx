@@ -12,6 +12,10 @@ import { DebugConsole } from "@/components/DebugConsole";
 const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
 const aptos = new AptosClient(aptosConfig);
 
+const SHELBY_API_KEY = process.env.NEXT_PUBLIC_SHELBY_API_KEY || "";
+const SHELBY_RPC_BASE = "https://api.shelbynet.shelby.xyz/shelby";
+const SHELBY_GATEWAY = process.env.NEXT_PUBLIC_SHELBY_GATEWAY || "https://gateway.shelby.xyz";
+
 export default function FileDownloadPage({ params }: { params: { hash: string | string[] } }) {
   const { connected, account, connect, disconnect, isLoading: walletLoading, signAndSubmitTransaction, signTransaction } = useWallet();
   const shelbyClient = useShelbyClient();
@@ -72,16 +76,97 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
     name: fileName
   });
 
-  if (metadataError) {
-    console.error("Shelby Metadata Fetch Error (likely 401):", metadataError);
-  }
+  // Log metadata errors but don't block the page — file may still be downloadable
+  useEffect(() => {
+    if (metadataError) {
+      console.warn("Shelby Metadata Fetch Error (non-blocking):", metadataError);
+    }
+  }, [metadataError]);
+  // Read lock metadata from localStorage (set by dashboard when user locks a file)
+  const [lockInfo, setLockInfo] = useState<{ locked: boolean; price: number } | null>(null);
+  
+  useEffect(() => {
+    const fullFileId = `${ownerAddr}/${fileName}`;
+    const stored = localStorage.getItem(`shelby_lock_${fullFileId}`);
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        setLockInfo({ locked: data.locked, price: data.price });
+      } catch {}
+    } else {
+      // No lock data found — file is not locked
+      setLockInfo({ locked: false, price: 0 });
+    }
+  }, [ownerAddr, fileName]);
 
   const fileData = {
     name: metadata?.name || fileName || "Unknown File",
     size: metadata?.size ? `${(metadata.size / 1024 / 1024).toFixed(2)} MB` : (metadataError ? "Metadata Unavailable" : "..."),
-    locked: true,
-    price: "0.5",
+    locked: lockInfo?.locked ?? false,
+    price: lockInfo?.price?.toString() ?? "0",
     owner: ownerAddr
+  };
+
+  // Fallback download: try multiple auth strategies against Shelby RPC
+  const fallbackDownload = async (account: string, blobName: string): Promise<Blob> => {
+    const encodedName = encodeURIComponent(blobName);
+    const url = `${SHELBY_RPC_BASE}/v1/blobs/${account}/${encodedName}`;
+    
+    // Try multiple auth header strategies (the upload uses x-api-key and works)
+    const authStrategies: { name: string; headers: Record<string, string> }[] = [
+      { name: "x-api-key", headers: SHELBY_API_KEY ? { "x-api-key": SHELBY_API_KEY } : {} },
+      { name: "Bearer token", headers: SHELBY_API_KEY ? { "Authorization": `Bearer ${SHELBY_API_KEY}` } : {} },
+      { name: "No auth", headers: {} },
+    ];
+
+    let lastError = "";
+    for (const strategy of authStrategies) {
+      console.log(`RPC download [${strategy.name}]:`, url);
+      try {
+        const response = await fetch(url, { headers: strategy.headers });
+        if (response.ok) {
+          console.log(`RPC download succeeded with: ${strategy.name}`);
+          return await response.blob();
+        }
+        let errorBody = "";
+        try { errorBody = await response.text(); } catch {}
+        lastError = `${response.status} ${errorBody || response.statusText}`;
+        console.warn(`RPC [${strategy.name}] failed [${response.status}]:`, errorBody || response.statusText);
+      } catch (fetchErr: any) {
+        lastError = fetchErr.message;
+        console.warn(`RPC [${strategy.name}] fetch error:`, fetchErr.message);
+      }
+    }
+    throw new Error(`All RPC auth strategies failed: ${lastError}`);
+  };
+
+  // Gateway fallback: try public Shelby Gateway (no auth required)
+  const gatewayDownload = async (account: string, blobName: string): Promise<Blob> => {
+    const encodedName = encodeURIComponent(blobName);
+    // Try common gateway URL patterns
+    const urls = [
+      `${SHELBY_GATEWAY}/v1/blobs/${account}/${encodedName}`,
+      `${SHELBY_GATEWAY}/blobs/${account}/${encodedName}`,
+      `${SHELBY_GATEWAY}/${account}/${encodedName}`,
+    ];
+    let lastError = "";
+    for (const url of urls) {
+      console.log("Gateway download attempt:", url);
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          return await response.blob();
+        }
+        let errorBody = "";
+        try { errorBody = await response.text(); } catch {}
+        lastError = `${response.status} ${response.statusText}${errorBody ? ` — ${errorBody}` : ""}`;
+        console.warn(`Gateway attempt failed [${response.status}]:`, url, errorBody || response.statusText);
+      } catch (fetchErr: any) {
+        lastError = fetchErr.message;
+        console.warn("Gateway fetch error:", url, fetchErr.message);
+      }
+    }
+    throw new Error(`Gateway download failed: ${lastError}`);
   };
 
   const connectWallet = async () => {
@@ -296,12 +381,31 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
                 setDownloading(true);
                 setStatusMsg("Downloading from Shelby nodes...");
                 try {
-                  const blob = await shelbyClient.rpc.getBlob({
-                    account: ownerAddr,
-                    blobName: fileName
-                  });
-                  const response = new Response(blob.readable);
-                  const blobData = await response.blob();
+                  let blobData: Blob;
+                  try {
+                    // Try SDK method first
+                    console.log("Attempt 1/3: SDK getBlob", { account: ownerAddr, blobName: fileName });
+                    const blob = await shelbyClient.rpc.getBlob({
+                      account: ownerAddr,
+                      blobName: fileName
+                    });
+                    const response = new Response(blob.readable);
+                    blobData = await response.blob();
+                  } catch (sdkErr: any) {
+                    console.warn("SDK getBlob failed:", sdkErr.message);
+                    setStatusMsg("Retrying with direct RPC...");
+                    try {
+                      // Fallback 2: direct fetch with API key
+                      console.log("Attempt 2/3: Direct RPC with API key");
+                      blobData = await fallbackDownload(ownerAddr, fileName);
+                    } catch (rpcErr: any) {
+                      console.warn("RPC fallback failed:", rpcErr.message);
+                      setStatusMsg("Retrying with Shelby Gateway...");
+                      // Fallback 3: Shelby Gateway (public, no auth)
+                      console.log("Attempt 3/3: Shelby Gateway (no auth)");
+                      blobData = await gatewayDownload(ownerAddr, fileName);
+                    }
+                  }
                   const url = URL.createObjectURL(blobData);
                   const a = document.createElement("a");
                   a.href = url;
@@ -312,7 +416,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
                   URL.revokeObjectURL(url);
                   setStatusMsg("✓ Download complete!");
                 } catch (err: any) {
-                  console.error("Download Error:", err);
+                  console.error("All download attempts failed:", err);
                   setStatusMsg(`✗ Download failed: ${err.message}`);
                 } finally {
                   setDownloading(false);

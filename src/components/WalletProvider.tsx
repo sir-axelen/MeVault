@@ -24,6 +24,10 @@ const queryClient = new QueryClient();
 
 const shelbyClient = new ShelbyClient({ 
   network: Network.SHELBYNET,
+  apiKey: process.env.NEXT_PUBLIC_SHELBY_API_KEY,
+  indexer: {
+    baseUrl: typeof window !== "undefined" ? `${window.location.origin}/api/shelby-indexer` : "http://localhost:3000/api/shelby-indexer",
+  }
 });
 
 export function WalletProvider({ children }: PropsWithChildren) {

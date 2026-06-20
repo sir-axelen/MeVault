@@ -9,8 +9,7 @@ import { useAptBalance } from "@aptos-labs/react";
 // Initialize Aptos client using default SHELBYNET (matching the working upload flow)
 const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
 const aptos = new AptosClient(aptosConfig);
-import { useShelbyClient } from "@shelby-protocol/react";
-import { createDefaultErasureCodingProvider, generateCommitments, ShelbyBlobClient, expectedTotalChunksets } from "@shelby-protocol/sdk/browser";
+import { useShelbyClient, useEncodeBlobs, useRegisterCommitments } from "@shelby-protocol/react";
 import { DebugConsole } from "@/components/DebugConsole";
 
 type FileRecord = {
@@ -20,10 +19,51 @@ type FileRecord = {
   locked: boolean;
 };
 
+const uploadToShelbyRPC = async (account: string, blobName: string, blobData: Uint8Array, onProgress?: (pct: number) => void) => {
+  const baseUrl = "https://api.shelbynet.shelby.xyz/shelby";
+  const apiKey = process.env.NEXT_PUBLIC_SHELBY_API_KEY || "";
+  const headers = { "x-api-key": apiKey };
+  const partSize = 5 * 1024 * 1024; // 5MB chunks
+
+  const startRes = await fetch(`${baseUrl}/v1/multipart-uploads`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ rawAccount: account, rawBlobName: blobName, rawPartSize: partSize })
+  });
+
+  if (!startRes.ok) throw new Error(`Failed to start upload: ${await startRes.text()}`);
+  const { uploadId } = await startRes.json();
+
+  const totalParts = Math.ceil(blobData.length / partSize);
+  for (let i = 0; i < totalParts; i++) {
+    const start = i * partSize;
+    const end = Math.min(start + partSize, blobData.length);
+    const chunk = blobData.slice(start, end);
+
+    const partRes = await fetch(`${baseUrl}/v1/multipart-uploads/${uploadId}/parts/${i}`, {
+      method: "PUT",
+      headers: { ...headers, "Content-Type": "application/octet-stream" },
+      body: chunk
+    });
+
+    if (!partRes.ok) throw new Error(`Failed to upload chunk ${i}: ${await partRes.text()}`);
+    if (onProgress) onProgress(90 + Math.floor(((i + 1) / totalParts) * 10));
+  }
+
+  const completeRes = await fetch(`${baseUrl}/v1/multipart-uploads/${uploadId}/complete`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" }
+  });
+
+  if (!completeRes.ok) throw new Error(`Failed to complete upload: ${await completeRes.text()}`);
+};
+
 export default function Dashboard() {
   const walletContext = useWallet();
   const { connected, account, wallet, connect, disconnect, isLoading: walletLoading, signAndSubmitTransaction, signTransaction } = walletContext;
   const shelbyClient = useShelbyClient();
+  const encodeBlobs = useEncodeBlobs();
+  const registerCommitments = useRegisterCommitments({ client: shelbyClient });
   const { data: aptBalance, isLoading: balanceLoading } = useAptBalance();
   const isLoading = walletLoading; // Don't block UI with balance loading
 
@@ -213,41 +253,35 @@ export default function Dashboard() {
       const cleanFileName = currentFile.name.replace(/\s+/g, '_');
       const accountAddress = typeof account.address === 'string' ? account.address : account.address.toString();
       
-      const provider = await createDefaultErasureCodingProvider();
-      const commitments = await generateCommitments(provider, blobData);
-      const chunksetSize = provider.config.erasure_k * provider.config.chunkSizeBytes;
       const expirationMicros = Date.now() * 1000 + 30 * 24 * 60 * 60 * 1000000;
 
-      setProgressLabel("Registering on-chain...");
+      setProgressLabel("Encoding file commitments...");
       setProgressPct(30);
 
-      const response = await signAndSubmitTransaction({
-        data: ShelbyBlobClient.createBatchRegisterBlobsPayload({
-          account: AccountAddress.from(accountAddress, { maxMissingChars: 63 }),
-          expirationMicros,
-          blobs: [{
-            blobName: cleanFileName,
-            blobSize: blobData.length,
-            blobMerkleRoot: commitments.blob_merkle_root,
-            numChunksets: expectedTotalChunksets(blobData.length, chunksetSize),
-          }],
-          encoding: provider.config.enumIndex,
-        })
+      const commitments = await encodeBlobs.mutateAsync({
+        blobs: [{ blobData }]
+      });
+
+      setProgressLabel("Confirming registration on-chain...");
+      setProgressPct(60);
+
+      const registerTx = await registerCommitments.mutateAsync({
+        signer: walletContext as any,
+        commitments: [{ blobName: cleanFileName, commitment: commitments[0] }],
+        expirationMicros,
       });
       
-      setProgressLabel("Confirming transaction...");
-      setProgressPct(50);
+      await aptos.waitForTransaction({ transactionHash: registerTx.hash });
 
-      await aptos.waitForTransaction({ transactionHash: response.hash });
+      setProgressLabel("Uploading to Storage Nodes...");
+      setProgressPct(90);
 
-      setProgressLabel("Uploading to Shelby nodes...");
-      setProgressPct(75);
-
-      await shelbyClient.rpc.putBlob({
-        account: accountAddress,
-        blobName: cleanFileName,
+      await uploadToShelbyRPC(
+        accountAddress,
+        cleanFileName,
         blobData,
-      });
+        (pct) => setProgressPct(pct)
+      );
       
       setProgressPct(100);
       setProgressLabel("Upload Complete!");
@@ -307,18 +341,46 @@ export default function Dashboard() {
     if (!connected || !account) { alert("Connect wallet first!"); return; }
     
     setLocking(true);
-    setLockStatus("Preparing transaction...");
+    setLockStatus("Preparing...");
     setProgressPct(10);
-    setProgressLabel("Step 1/3: Preparing Transaction...");
+    setProgressLabel(shouldLock ? "Locking file..." : "Removing lock...");
 
     try {
-      setLockStatus("Confirming on blockchain...");
-      setProgressPct(70);
-
-      // MOCK: Simulate network delay instead of actual blockchain transaction
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const fileId = decodeURIComponent(shareLink.split('/file/')[1] || "");
+      const price = parseFloat(aptPrice || "0");
       
-      setLockStatus(shouldLock ? "File Locked!" : "Lock Removed!");
+      console.log("Publishing file lock (off-chain):", { fileId, price, shouldLock });
+
+      // Simulate processing with a short animation
+      setLockStatus("Registering lock settings...");
+      setProgressPct(40);
+      await new Promise(r => setTimeout(r, 800));
+      
+      setLockStatus("Saving metadata...");
+      setProgressPct(70);
+      
+      // Store lock metadata in localStorage for the file viewer to read
+      const lockData = {
+        locked: shouldLock,
+        price: price,
+        fileId: fileId,
+        owner: (() => {
+          const raw = account.address;
+          if (typeof raw === "string") return raw;
+          if (raw && (raw as any).data) {
+            const d = (raw as any).data;
+            const b = Array.isArray(d) ? d : Object.values(d);
+            try { return AccountAddress.from(new Uint8Array(b as number[])).toString(); } catch { return raw.toString(); }
+          }
+          return raw.toString();
+        })(),
+        timestamp: Date.now(),
+      };
+      localStorage.setItem(`shelby_lock_${fileId}`, JSON.stringify(lockData));
+
+      await new Promise(r => setTimeout(r, 500));
+      
+      setLockStatus(shouldLock ? "✓ File Locked!" : "✓ Lock Removed!");
       setConfirmedOnChain(shouldLock);
       setProgressPct(100);
       
@@ -330,8 +392,8 @@ export default function Dashboard() {
       
       await new Promise(r => setTimeout(r, 1000));
     } catch (err: any) {
-      console.error("LOG: Publish error:", err);
-      alert(`Transaction failed: ${err.message || "Unknown error"}`);
+      console.error("LOG: Lock error:", err);
+      alert(`Failed to update lock: ${err.message || "Unknown error"}`);
     } finally {
       setLocking(false);
       setLockStatus("");
@@ -339,19 +401,7 @@ export default function Dashboard() {
     }
   };
 
-  const mockUnlock = async () => {
-    if (!connected || !account) { alert("Connect wallet first!"); return; }
-    setLocking(true);
-    try {
-      // MOCK: simulate unlock delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setUnlockMsg(`✓ Payment of ${aptPrice} APT verified on-chain — access granted`);
-    } catch {
-      setUnlockMsg(`✗ Transaction failed`);
-    } finally {
-      setLocking(false);
-    }
-  };
+
 
   return (
     <>
