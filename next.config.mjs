@@ -40,6 +40,7 @@ const nextConfig = {
         "stream/promises": false,
         "fs/promises": false,
         "util/types": false,
+        got: false,
       };
 
       config.plugins.push(
