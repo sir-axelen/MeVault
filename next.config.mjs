@@ -28,6 +28,7 @@ const nextConfig = {
         assert: false,
         dns: false,
         timers: false,
+        got: false,
         // Specific sub-modules
         "stream/promises": false,
         "fs/promises": false,
