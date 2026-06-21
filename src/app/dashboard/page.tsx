@@ -112,6 +112,12 @@ export default function Dashboard() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedRows, setCopiedRows] = useState<Record<number, boolean>>({});
 
+  // Faucet states
+  const [faucetLoading, setFaucetLoading] = useState(false);
+  const [faucetMsg, setFaucetMsg] = useState("");
+  const [faucetError, setFaucetError] = useState("");
+  const [faucetCooldown, setFaucetCooldown] = useState(0);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -136,6 +142,15 @@ export default function Dashboard() {
     }
     
     setIsLoaded(true);
+
+    // Restore faucet cooldown from localStorage
+    const lastFaucet = localStorage.getItem("shelby_last_faucet");
+    if (lastFaucet) {
+      const elapsed = Date.now() - parseInt(lastFaucet);
+      if (elapsed < 60000) {
+        setFaucetCooldown(Math.ceil((60000 - elapsed) / 1000));
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -143,6 +158,21 @@ export default function Dashboard() {
       localStorage.setItem("shelby_files", JSON.stringify(files));
     }
   }, [files, isLoaded]);
+
+  // Faucet cooldown timer
+  useEffect(() => {
+    if (faucetCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setFaucetCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [faucetCooldown]);
 
   const deleteFile = (index: number) => {
     const newFiles = [...files];
@@ -173,6 +203,56 @@ export default function Dashboard() {
       }
     } else {
       disconnect();
+    }
+  };
+
+  const claimFaucet = async () => {
+    if (!connected || !account) {
+      setFaucetError("Please connect your wallet first.");
+      return;
+    }
+    if (faucetCooldown > 0) return;
+
+    setFaucetLoading(true);
+    setFaucetMsg("");
+    setFaucetError("");
+
+    try {
+      const rawAddr = account.address;
+      let addrStr = "";
+      if (typeof rawAddr === "string") {
+        addrStr = rawAddr;
+      } else if (rawAddr && (rawAddr as any).data) {
+        const data = (rawAddr as any).data;
+        const bytes = Array.isArray(data) ? data : Object.values(data);
+        try {
+          addrStr = AccountAddress.from(new Uint8Array(bytes as number[])).toString();
+        } catch {
+          addrStr = rawAddr.toString();
+        }
+      } else {
+        addrStr = rawAddr.toString();
+      }
+
+      const res = await fetch("/api/faucet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: addrStr }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        setFaucetMsg(data.message || "1 APT claimed successfully!");
+        setFaucetCooldown(60);
+        localStorage.setItem("shelby_last_faucet", Date.now().toString());
+      } else {
+        setFaucetError(data.error || "Failed to claim. Please try again.");
+      }
+    } catch (err: any) {
+      setFaucetError(err.message || "Network error. Please try again.");
+    } finally {
+      setFaucetLoading(false);
     }
   };
 
@@ -490,24 +570,31 @@ export default function Dashboard() {
                 <span className="section-label" style={{ color: "var(--shelby-accent)" }}>QUICK START GUIDE</span>
               </div>
               <h2 className="text-lg font-semibold text-white mb-5">Welcome to Shelby! Here is how it works:</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)" }}>
                     <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>1</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Connect Wallet</h3>
-                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Connect your Petra Aptos wallet using the button in the top right corner.</p>
+                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Install <a href="https://petra.app/" target="_blank" rel="noopener" style={{ color: "var(--shelby-accent)", textDecoration: "underline" }}>Petra Wallet</a> and connect via the button above. Make sure to switch network to <span style={{ color: "var(--shelby-accent)", fontFamily: "var(--font-space-mono)" }}>Shelbynet</span> in your wallet settings.</p>
+                </div>
+                <div>
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(124,58,237,0.15)", border: "1px solid rgba(124,58,237,0.3)" }}>
+                    <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>2</span>
+                  </div>
+                  <h3 className="text-sm font-medium text-white mb-1">Get Test Tokens</h3>
+                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Claim free testnet tokens (APT + ShelbyUSD) using the <span style={{ color: "var(--shelby-green)", fontFamily: "var(--font-space-mono)" }}>Faucet</span> section below, or visit the official <a href="https://docs.shelby.xyz/apis/faucet/shelbyusd" target="_blank" rel="noopener noreferrer" style={{ color: "var(--shelby-accent)", textDecoration: "underline" }}>Shelby Faucet</a>.</p>
                 </div>
                 <div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)" }}>
-                    <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>2</span>
+                    <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>3</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Upload File</h3>
                   <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Drag and drop any file. It will be registered on-chain and securely stored on Shelby nodes.</p>
                 </div>
                 <div>
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.3)" }}>
-                    <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>3</span>
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(0,255,148,0.15)", border: "1px solid rgba(0,255,148,0.3)" }}>
+                    <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>4</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Lock & Earn</h3>
                   <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Optionally lock your file. Users must pay you APT on-chain to access it.</p>
@@ -516,6 +603,133 @@ export default function Dashboard() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Faucet Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="glass rounded-2xl p-6 mb-5 relative overflow-hidden"
+          style={{ border: "1px solid rgba(124,58,237,0.2)" }}
+        >
+          <div className="absolute inset-0 bg-gradient-to-br from-[rgba(124,58,237,0.05)] via-transparent to-[rgba(0,229,255,0.03)] pointer-events-none"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--shelby-accent2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path>
+                </svg>
+                <span className="section-label" style={{ color: "var(--shelby-accent2)" }}>TESTNET FAUCET</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="tag" style={{ background: "rgba(124,58,237,0.12)", color: "#a78bfa", borderColor: "rgba(124,58,237,0.3)", fontFamily: "var(--font-space-mono)" }}>SHELBYNET</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <div className="flex-1">
+                <h3 className="text-base font-semibold text-white mb-1">Claim Testnet Tokens</h3>
+                <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.6" }}>
+                  Need APT for gas and ShelbyUSD for storage fees? Claim both instantly every 60 seconds to start uploading files on Shelbynet.
+                </p>
+              </div>
+              <div className="flex flex-col items-end gap-2 min-w-[180px]">
+                <button
+                  className="btn-primary px-6 py-2.5 rounded-xl text-sm font-semibold w-full sm:w-auto flex items-center justify-center gap-2"
+                  style={{
+                    background: faucetCooldown > 0
+                      ? "rgba(124,58,237,0.2)"
+                      : "linear-gradient(135deg, #7c3aed, #6d28d9)",
+                    opacity: (!connected || faucetLoading || faucetCooldown > 0) ? 0.6 : 1,
+                    cursor: (!connected || faucetLoading || faucetCooldown > 0) ? "not-allowed" : "pointer",
+                    color: "white",
+                  }}
+                  onClick={claimFaucet}
+                  disabled={!connected || faucetLoading || faucetCooldown > 0}
+                >
+                  {faucetLoading ? (
+                    <>
+                      <div className="dot-pulse" style={{ background: "white", boxShadow: "0 0 6px white" }}></div>
+                      <span>Claiming...</span>
+                    </>
+                  ) : faucetCooldown > 0 ? (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                      <span style={{ fontFamily: "var(--font-space-mono)" }}>Wait {faucetCooldown}s</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path>
+                      </svg>
+                      <span>Claim Tokens</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <AnimatePresence>
+              {faucetMsg && (
+                <motion.div
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg"
+                  style={{ background: "rgba(0,255,148,0.08)", border: "1px solid rgba(0,255,148,0.2)" }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="7" r="6" stroke="var(--shelby-green)" strokeWidth="1.5" />
+                    <path d="M4.5 7l2 2 3-3" stroke="var(--shelby-green)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="text-xs font-medium" style={{ color: "var(--shelby-green)" }}>{faucetMsg}</span>
+                </motion.div>
+              )}
+              {faucetError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg"
+                  style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="7" r="6" stroke="#ef4444" strokeWidth="1.5" />
+                    <path d="M7 4.5v3M7 9.5h.01" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="text-xs font-medium" style={{ color: "#ef4444" }}>{faucetError}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {!connected && (
+              <p className="text-xs mt-3" style={{ color: "var(--shelby-muted)", fontStyle: "italic" }}>
+                Connect your wallet to use the faucet.
+              </p>
+            )}
+
+            <div className="flex items-center gap-4 mt-4 pt-3" style={{ borderTop: "1px solid rgba(124,58,237,0.15)" }}>
+              <a
+                href="https://docs.shelby.xyz/apis/faucet/shelbyusd"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs transition-colors hover:opacity-80"
+                style={{ color: "var(--shelby-accent)" }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                  <polyline points="15 3 21 3 21 9"></polyline>
+                  <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+                Official Shelby Faucet (ShelbyUSD)
+              </a>
+              <span className="text-[10px]" style={{ color: "var(--shelby-muted)" }}>•</span>
+              <span className="text-[10px]" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
+                Network: Shelbynet
+              </span>
+            </div>
+          </div>
+        </motion.div>
 
         <div className="glass rounded-2xl p-6 mb-5">
           <div className="flex items-center justify-between mb-5">

@@ -1,7 +1,7 @@
 "use client";
 
 import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, SMAAPreset } from 'postprocessing';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
 import './Hyperspeed.css';
@@ -47,6 +47,7 @@ const DEFAULT_EFFECT_OPTIONS = {
 const Hyperspeed = ({ effectOptions = DEFAULT_EFFECT_OPTIONS }: { effectOptions?: any }) => {
   const hyperspeed = useRef<HTMLDivElement>(null);
   const appRef = useRef<any>(null);
+  const [webglFailed, setWebglFailed] = useState(false);
 
   useEffect(() => {
     if (appRef.current) {
@@ -379,6 +380,18 @@ const Hyperspeed = ({ effectOptions = DEFAULT_EFFECT_OPTIONS }: { effectOptions?
 
         const initW = Math.max(1, container.offsetWidth);
         const initH = Math.max(1, container.offsetHeight);
+
+        // Check for WebGL support before attempting to create renderer
+        const testCanvas = document.createElement('canvas');
+        const gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+        if (!gl) {
+          throw new Error('WebGL not supported');
+        }
+        // Release test context immediately
+        if (gl && (gl as WebGLRenderingContext).getExtension) {
+          const loseCtx = (gl as WebGLRenderingContext).getExtension('WEBGL_lose_context');
+          if (loseCtx) loseCtx.loseContext();
+        }
 
         this.renderer = new THREE.WebGLRenderer({
           antialias: false,
@@ -1205,12 +1218,17 @@ const Hyperspeed = ({ effectOptions = DEFAULT_EFFECT_OPTIONS }: { effectOptions?
     };
     options.distortion = (distortions as any)[options.distortion];
 
+    try {
     const myApp = new App(container, options);
     appRef.current = myApp;
     myApp.loadAssets().then(() => {
       if (myApp.disposed) return;
       myApp.init();
     });
+    } catch (e) {
+      console.warn('WebGL not available, using CSS fallback:', e);
+      setWebglFailed(true);
+    }
 
     return () => {
       if (appRef.current) {
@@ -1219,6 +1237,37 @@ const Hyperspeed = ({ effectOptions = DEFAULT_EFFECT_OPTIONS }: { effectOptions?
       }
     };
   }, [effectOptions]);
+
+  if (webglFailed) {
+    return (
+      <div
+        id="lights"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 0,
+          background: 'radial-gradient(ellipse at 50% 80%, rgba(0,229,255,0.08) 0%, rgba(124,58,237,0.04) 40%, #080c10 100%)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '-20%',
+            left: '10%',
+            width: '80%',
+            height: '60%',
+            background: 'linear-gradient(180deg, transparent 0%, rgba(0,229,255,0.03) 30%, rgba(124,58,237,0.05) 100%)',
+            filter: 'blur(60px)',
+            animation: 'pulse 4s ease-in-out infinite',
+          }}
+        />
+      </div>
+    );
+  }
 
   return <div id="lights" ref={hyperspeed}></div>;
 };

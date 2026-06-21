@@ -7,13 +7,6 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   webpack: (config, { isServer, webpack }) => {
-    // Apply got alias for both server and client to prevent
-    // "Can't resolve 'got'" error from @aptos-labs/aptos-client
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      got: false,
-    };
-
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -47,6 +40,7 @@ const nextConfig = {
         "stream/promises": false,
         "fs/promises": false,
         "util/types": false,
+        got: false,
       };
 
       config.plugins.push(

@@ -22,6 +22,7 @@
     "@telegram-apps/bridge": "^2.11.0",
     "aptos": "^1.22.1",
     "framer-motion": "^12.38.0",
+    "got": "^11.8.6",
     "next": "14.2.35",
     "petra-plugin-wallet-adapter": "^0.4.5",
     "postprocessing": "^6.39.1",
