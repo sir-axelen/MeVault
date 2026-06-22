@@ -52,7 +52,7 @@ export function WalletProvider({ children }: PropsWithChildren) {
     <QueryClientProvider client={queryClient}>
       <ShelbyClientProvider client={shelbyClient}>
         <AptosWalletAdapterProvider
-          optInWallets={["Petra"]}
+          optInWallets={["Petra", "Martian", "Pontem"]}
           autoConnect={false}
           dappConfig={{
             network: Network.SHELBYNET,

@@ -11,6 +11,7 @@ const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
 const aptos = new AptosClient(aptosConfig);
 import { useShelbyClient, useEncodeBlobs, useRegisterCommitments } from "@shelby-protocol/react";
 import { DebugConsole } from "@/components/DebugConsole";
+import { WalletSelectorModal } from "@/components/WalletSelectorModal";
 
 type FileRecord = {
   name: string;
@@ -102,6 +103,7 @@ export default function Dashboard() {
   const [progressLabel, setProgressLabel] = useState("Uploading to Shelby Hot Storage…");
   const [showShare, setShowShare] = useState(false);
   const [shareLink, setShareLink] = useState("");
+  const [linkRevealed, setLinkRevealed] = useState(false);
   
   const [aptPrice, setAptPrice] = useState("0.5");
   const [unlockMsg, setUnlockMsg] = useState("");
@@ -117,6 +119,72 @@ export default function Dashboard() {
   const [faucetMsg, setFaucetMsg] = useState("");
   const [faucetError, setFaucetError] = useState("");
   const [faucetCooldown, setFaucetCooldown] = useState(0);
+
+  const [showRpcModal, setShowRpcModal] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [copiedFields, setCopiedFields] = useState<Record<string, boolean>>({});
+  const [autoAddLoading, setAutoAddLoading] = useState(false);
+  const [autoAddSuccess, setAutoAddSuccess] = useState(false);
+  const [autoAddError, setAutoAddError] = useState("");
+
+  const copyRpcField = (key: string, value: string) => {
+    navigator.clipboard.writeText(value).catch(() => {});
+    setCopiedFields((prev) => ({ ...prev, [key]: true }));
+    setTimeout(() => {
+      setCopiedFields((prev) => ({ ...prev, [key]: false }));
+    }, 1500);
+  };
+
+  const handleAutoAddRpc = async () => {
+    setAutoAddLoading(true);
+    setAutoAddError("");
+    setAutoAddSuccess(false);
+    try {
+      if (!connected || !walletContext.wallet) {
+        throw new Error("Please connect your wallet first.");
+      }
+
+      const standardWallet = (walletContext.wallet as any);
+      const changeNetworkFeature = standardWallet.features?.["aptos:changeNetwork"];
+      
+      if (!changeNetworkFeature || typeof changeNetworkFeature.changeNetwork !== "function") {
+        throw new Error(
+          `${standardWallet.name || "Your wallet"} does not support automatic network switching/adding. Please use the manual configuration below.`
+        );
+      }
+
+      console.log("Requesting network switch via AIP-62 to Shelbynet...");
+      const result = await changeNetworkFeature.changeNetwork({
+        name: "Shelbynet",
+        chainId: 113,
+        url: "https://api.shelbynet.shelby.xyz/v1",
+      });
+
+      console.log("Network switch result:", result);
+      setAutoAddSuccess(true);
+      
+      setTimeout(() => {
+        setShowRpcModal(false);
+        setAutoAddSuccess(false);
+      }, 1500);
+    } catch (err: any) {
+      console.error("Automatic Shelbynet addition failed:", err);
+      const msg = err.message || err.toString() || "Unknown error";
+      if (msg.toLowerCase().includes("rejected")) {
+        setAutoAddError("User rejected the network switch request.");
+      } else if (
+        msg.includes("PetraApiError") ||
+        msg.toLowerCase().includes("petraapierror") ||
+        (err.name && err.name.includes("PetraApiError"))
+      ) {
+        setAutoAddError("Petra Wallet cannot add custom networks automatically. Please configure Shelbynet manually using Option 2 below.");
+      } else {
+        setAutoAddError(msg);
+      }
+    } finally {
+      setAutoAddLoading(false);
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -187,20 +255,7 @@ export default function Dashboard() {
 
   const connectWallet = async () => {
     if (!connected) {
-      try {
-        await connect("Petra");
-      } catch (err: any) {
-        if (err.name === "WalletNotReadyError" || err.name === "WalletNotFoundError") {
-          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-          if (isMobile) {
-            window.location.href = `https://petra.app/explore?link=${encodeURIComponent(window.location.href)}`;
-          } else {
-            window.open("https://petra.app/", "_blank");
-          }
-        } else {
-          console.error("Connection error:", err);
-        }
-      }
+      setShowWalletModal(true);
     } else {
       disconnect();
     }
@@ -387,16 +442,52 @@ export default function Dashboard() {
     
     setShareLink(link);
     setShowShare(true);
+    setLinkRevealed(false);
     setUploading(false);
-
-    setFiles((prev) => [
-      { name: currentFile.name, size: formatBytes(currentFile.size), link, locked: false },
-      ...prev,
-    ]);
-    
     setLocked(false);
     setConfirmedOnChain(false);
     setUnlockMsg("");
+  };
+
+  const publishPublicFile = async () => {
+    setLocking(true);
+    setLockStatus("Publishing public metadata...");
+    
+    // Simulate publishing delay
+    await new Promise(r => setTimeout(r, 1200));
+    
+    // Save metadata showing it is unlocked
+    const fileId = decodeURIComponent(shareLink.split('/file/')[1] || "");
+    const lockData = {
+      locked: false,
+      price: 0,
+      fileId: fileId,
+      owner: account ? (typeof account.address === 'string' ? account.address : account.address.toString()) : "",
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(`shelby_lock_${fileId}`, JSON.stringify(lockData));
+
+    if (currentFile) {
+      setFiles((prev) => [
+        { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: false },
+        ...prev,
+      ]);
+    }
+    
+    setConfirmedOnChain(false);
+    setLocked(false);
+    setLinkRevealed(true);
+    setLocking(false);
+    setLockStatus("");
+  };
+
+  const resetUploadWizard = () => {
+    setCurrentFile(null);
+    setShowShare(false);
+    setLinkRevealed(false);
+    setProgressPct(0);
+    setLocked(false);
+    setConfirmedOnChain(false);
   };
 
   const copyLink = () => {
@@ -464,12 +555,14 @@ export default function Dashboard() {
       setConfirmedOnChain(shouldLock);
       setProgressPct(100);
       
-      if (files.length > 0) {
-        const newFiles = [...files];
-        newFiles[0].locked = shouldLock;
-        setFiles(newFiles);
+      if (currentFile) {
+        setFiles((prev) => [
+          { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: shouldLock },
+          ...prev,
+        ]);
       }
       
+      setLinkRevealed(true);
       await new Promise(r => setTimeout(r, 1000));
     } catch (err: any) {
       console.error("LOG: Lock error:", err);
@@ -486,8 +579,8 @@ export default function Dashboard() {
   return (
     <>
       <nav className="glass sticky top-0 z-50 border-t-0 border-l-0 border-r-0">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3 overflow-hidden">
+        <div className="max-w-4xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-1.5 sm:gap-3 overflow-hidden">
             <div
               style={{
                 width: "24px",
@@ -508,20 +601,42 @@ export default function Dashboard() {
             </span>
             <span className="tag hidden md:inline-block" style={{ fontFamily: 'var(--font-space-mono)' }}>APTOS</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setShowRpcModal(true)}
+              className="px-2 py-1.5 sm:px-3 sm:py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:opacity-90 active:scale-95 animate-pulse-subtle"
+              style={{
+                background: "rgba(0, 229, 255, 0.08)",
+                border: "1px solid rgba(0, 229, 255, 0.25)",
+                color: "var(--shelby-accent)",
+                fontFamily: "var(--font-space-mono)",
+                cursor: "pointer",
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span className="hidden sm:inline">Add RPC</span>
+            </button>
             <span
-              className="section-label hidden sm:block"
+              className="section-label hidden md:block"
               style={{ color: connected ? "var(--shelby-green)" : "" }}
             >
               {connected ? "CONNECTED" : "NOT CONNECTED"}
             </span>
             <button
-              className={`btn-wallet px-4 py-2 rounded-lg font-medium text-sm ${connected ? "connected" : ""}`}
+              className={`btn-wallet px-2 py-1.5 sm:px-4 sm:py-2 rounded-lg font-medium text-xs sm:text-sm ${connected ? "connected" : ""}`}
               onClick={connectWallet}
               disabled={isLoading}
               style={{ fontFamily: 'var(--font-space-mono)' }}
             >
-              {isLoading ? "Connecting…" : connected ? address : "Connect Wallet"}
+              {isLoading ? "Connecting…" : connected ? address : (
+                <>
+                  <span className="hidden sm:inline">Connect Wallet</span>
+                  <span className="sm:hidden">Connect</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -576,7 +691,23 @@ export default function Dashboard() {
                     <span className="text-white font-bold text-sm" style={{ fontFamily: 'var(--font-space-mono)' }}>1</span>
                   </div>
                   <h3 className="text-sm font-medium text-white mb-1">Connect Wallet</h3>
-                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>Install <a href="https://petra.app/" target="_blank" rel="noopener" style={{ color: "var(--shelby-accent)", textDecoration: "underline" }}>Petra Wallet</a> and connect via the button above. Make sure to switch network to <span style={{ color: "var(--shelby-accent)", fontFamily: "var(--font-space-mono)" }}>Shelbynet</span> in your wallet settings.</p>
+                  <p className="text-xs" style={{ color: "var(--shelby-muted)", lineHeight: "1.5" }}>
+                    Install <a href="https://petra.app/" target="_blank" rel="noopener" style={{ color: "var(--shelby-accent)", textDecoration: "underline" }}>Petra Wallet</a> and connect. Make sure to switch network to <span style={{ color: "var(--shelby-accent)", fontFamily: "var(--font-space-mono)" }}>Shelbynet</span> in your wallet settings.
+                    <button
+                      onClick={() => setShowRpcModal(true)}
+                      className="ml-1 font-semibold transition-all hover:text-white"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--shelby-accent)",
+                        cursor: "pointer",
+                        padding: 0,
+                        textDecoration: "underline",
+                      }}
+                    >
+                      Show RPC details.
+                    </button>
+                  </p>
                 </div>
                 <div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(124,58,237,0.15)", border: "1px solid rgba(124,58,237,0.3)" }}>
@@ -633,9 +764,9 @@ export default function Dashboard() {
                   Need APT for gas and ShelbyUSD for storage fees? Claim both instantly every 60 seconds to start uploading files on Shelbynet.
                 </p>
               </div>
-              <div className="flex flex-col items-end gap-2 min-w-[180px]">
+              <div className="flex flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto sm:min-w-[180px]">
                 <button
-                  className="btn-primary px-6 py-2.5 rounded-xl text-sm font-semibold w-full sm:w-auto flex items-center justify-center gap-2"
+                  className="btn-primary px-6 py-3 sm:py-2.5 rounded-xl text-sm font-semibold w-full sm:w-auto flex items-center justify-center gap-2"
                   style={{
                     background: faucetCooldown > 0
                       ? "rgba(124,58,237,0.2)"
@@ -844,128 +975,168 @@ export default function Dashboard() {
 
           {showShare && (
             <div className="fade-in mt-5">
-              <div className="flex items-center gap-2 mb-3">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <circle cx="7" cy="7" r="6" stroke="var(--shelby-green)" strokeWidth="1.5" />
-                  <path
-                    d="M4.5 7l2 2 3-3"
-                    stroke="var(--shelby-green)"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-                <span className="text-xs font-medium" style={{ color: "var(--shelby-green)" }}>
-                  Stored on Shelby — Instant Access (&lt;1s)
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={shareLink}
-                  className="link-badge"
-                  style={{ fontFamily: 'var(--font-space-mono)' }}
-                />
-                <button
-                  className={`btn-ghost px-4 py-2 rounded-lg text-sm ${copiedLink ? "copy-flash" : ""}`}
-                  onClick={copyLink}
-                >
-                  {copiedLink ? "Copied!" : "Copy"}
-                </button>
-              </div>
+              {!linkRevealed ? (
+                // Lock wizard setup screen
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Configure File Security</p>
+                      <p className="text-xs" style={{ color: "var(--shelby-muted)" }}>
+                        Decentralized upload complete. Choose your access model.
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="p-4 rounded-xl mb-4" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--shelby-border)" }}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-white mb-0.5">Lock this file</p>
+                        <p className="text-xs" style={{ color: "var(--shelby-muted)" }}>Require APT payment to access</p>
+                      </div>
+                      <button
+                        className={`toggle ${locked ? "on" : ""} ${locking ? "opacity-50 pointer-events-none" : ""}`}
+                        onClick={toggleLock}
+                        disabled={locking}
+                      ></button>
+                    </div>
 
-              <div className="mt-5 pt-4" style={{ borderTop: "1px solid var(--shelby-border)" }}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white mb-0.5">Lock this file</p>
-                    <p className="text-xs" style={{ color: "var(--shelby-muted)" }}>Require APT payment to access</p>
-                  </div>
-                  <button
-                    className={`toggle ${locked ? "on" : ""} ${locking ? "opacity-50 pointer-events-none" : ""}`}
-                    onClick={toggleLock}
-                    disabled={locking}
-                  ></button>
-                </div>
-                
-                {locking && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <div className="dot-pulse"></div>
-                    <span className="text-[10px] text-white/50 font-mono uppercase">{lockStatus || "PROCESSING..."}</span>
-                  </div>
-                )}
-                
-                {locked && (
-                  <div className="mt-4 fade-in">
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1">
-                        <label className="section-label block mb-1.5">ACCESS PRICE (APT)</label>
-                        <div
-                          className="flex items-center gap-2"
-                          style={{
-                            background: "rgba(255,255,255,0.04)",
-                            border: "1px solid var(--shelby-border)",
-                            borderRadius: "8px",
-                            padding: "8px 12px",
-                          }}
-                        >
-                          <input
-                            type="number"
-                            value={aptPrice}
-                            onChange={(e) => setAptPrice(e.target.value)}
-                            step="0.1"
-                            min="0.1"
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              outline: "none",
-                              color: "white",
-                              fontFamily: "var(--font-space-mono)",
-                              fontSize: "14px",
-                              width: "80px",
-                            }}
-                          />
-                          <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
-                            APT
-                          </span>
+                    {locking && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <div className="dot-pulse"></div>
+                        <span className="text-[10px] text-white/50 font-mono uppercase">{lockStatus || "PROCESSING..."}</span>
+                      </div>
+                    )}
+
+                    {locked && !locking && (
+                      <div className="mt-4 fade-in">
+                        <div className="flex flex-col sm:flex-row sm:items-end gap-4">
+                          <div className="flex-1 w-full">
+                            <label className="section-label block mb-1.5">ACCESS PRICE (APT)</label>
+                            <div
+                              className="flex items-center gap-2"
+                              style={{
+                                background: "rgba(255,255,255,0.04)",
+                                border: "1px solid var(--shelby-border)",
+                                borderRadius: "8px",
+                                padding: "8px 12px",
+                              }}
+                            >
+                              <input
+                                type="number"
+                                value={aptPrice}
+                                onChange={(e) => setAptPrice(e.target.value)}
+                                step="0.1"
+                                min="0.1"
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  outline: "none",
+                                  color: "white",
+                                  fontFamily: "var(--font-space-mono)",
+                                  fontSize: "14px",
+                                  width: "100%",
+                                }}
+                              />
+                              <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
+                                APT
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex flex-col gap-2">
-                        <button 
-                          className="btn-primary px-5 py-2 rounded-lg text-sm flex items-center gap-2" 
-                          onClick={() => publishFileOnChain(true)}
-                          disabled={locking}
-                          style={{ opacity: locking ? 0.7 : 1 }}
-                        >
-                          {locking ? (
-                            <>
-                              <div className="dot-pulse !bg-black !shadow-none"></div>
-                              <span>Processing...</span>
-                            </>
-                          ) : (
-                            confirmedOnChain ? "Update Lock Settings" : "Confirm & Approve Lock"
-                          )}
-                        </button>
-                        {confirmedOnChain && (
-                          <button 
-                            className="btn-ghost px-5 py-2 rounded-lg text-sm" 
-                            onClick={() => publishFileOnChain(false)}
-                            disabled={locking}
-                            style={{ borderColor: "#ef4444", color: "#ef4444" }}
-                          >
-                            Remove Lock
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {unlockMsg && (
-                      <p className="text-xs mt-2 fade-in" style={{ color: "var(--shelby-green)" }}>
-                        {unlockMsg}
-                      </p>
                     )}
                   </div>
-                )}
-              </div>
+
+                  <div className="mt-4 flex flex-col gap-2">
+                    {locked ? (
+                      <button
+                        className="btn-primary w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                        onClick={() => publishFileOnChain(true)}
+                        disabled={locking}
+                      >
+                        {locking ? "Confirming..." : "Confirm & Lock File"}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-primary w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                        onClick={publishPublicFile}
+                        disabled={locking}
+                        style={{
+                          background: "linear-gradient(135deg, var(--shelby-green), #00cc7a)",
+                        }}
+                      >
+                        {locking ? "Publishing..." : "Generate Public Link"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                // Revealed link screen
+                <div className="fade-in">
+                  <div className="flex items-center gap-2 mb-3">
+                    {confirmedOnChain ? (
+                      <>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--shelby-accent2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        <span className="text-xs font-medium" style={{ color: "#a78bfa" }}>
+                          Stored & Locked successfully on Aptos
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <circle cx="7" cy="7" r="6" stroke="var(--shelby-green)" strokeWidth="1.5" />
+                          <path
+                            d="M4.5 7l2 2 3-3"
+                            stroke="var(--shelby-green)"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        <span className="text-xs font-medium" style={{ color: "var(--shelby-green)" }}>
+                          Stored on Shelby — Public Link Ready
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 mb-4">
+                    <input
+                      type="text"
+                      readOnly
+                      value={shareLink}
+                      className="link-badge"
+                      style={{
+                        fontFamily: 'var(--font-space-mono)',
+                        border: confirmedOnChain ? "1px solid rgba(124,58,237,0.3)" : "1px solid rgba(0,255,148,0.25)",
+                        background: confirmedOnChain ? "rgba(124,58,237,0.06)" : "rgba(0,255,148,0.04)",
+                        color: confirmedOnChain ? "#a78bfa" : "var(--shelby-green)"
+                      }}
+                    />
+                    <button
+                      className={`btn-ghost px-4 py-2 rounded-lg text-sm ${copiedLink ? "copy-flash" : ""}`}
+                      onClick={copyLink}
+                    >
+                      {copiedLink ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+
+                  <button
+                    className="btn-ghost w-full py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
+                    onClick={resetUploadWizard}
+                    style={{ borderColor: "rgba(255,255,255,0.1)" }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Upload Another File</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1043,71 +1214,73 @@ export default function Dashboard() {
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: i * 0.05 }}
-                    className="file-row px-6 py-4 flex items-center gap-4"
+                    className="file-row px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                   >
-                    <div
-                      style={{
-                        width: "34px",
-                        height: "34px",
-                        background: "rgba(0,229,255,0.08)",
-                        border: "1px solid rgba(0,229,255,0.15)",
-                        borderRadius: "8px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path
-                          d="M3 2h7l3 3v9H3V2z"
-                          fill="rgba(0,229,255,0.15)"
-                          stroke="var(--shelby-accent)"
-                          strokeWidth="1.2"
-                        />
-                        <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-white truncate">{f.name}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
-                          {f.size}
-                        </span>
-                        <span className="tag tag-green" style={{ fontSize: "9px", fontFamily: "var(--font-space-mono)" }}>
-                          STORED
-                        </span>
-                        {f.locked && (
-                          <span
-                            className="tag"
-                            style={{
-                              background: "rgba(124,58,237,0.12)",
-                              color: "#a78bfa",
-                              borderColor: "rgba(124,58,237,0.3)",
-                              fontSize: "9px",
-                              fontFamily: "var(--font-space-mono)",
-                            }}
-                          >
-                            LOCKED
+                    <div className="flex items-center gap-4 min-w-0 flex-1">
+                      <div
+                        style={{
+                          width: "34px",
+                          height: "34px",
+                          background: "rgba(0,229,255,0.08)",
+                          border: "1px solid rgba(0,229,255,0.15)",
+                          borderRadius: "8px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path
+                            d="M3 2h7l3 3v9H3V2z"
+                            fill="rgba(0,229,255,0.15)"
+                            stroke="var(--shelby-accent)"
+                            strokeWidth="1.2"
+                          />
+                          <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
+                        </svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{f.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
+                            {f.size}
                           </span>
-                        )}
+                          <span className="tag tag-green" style={{ fontSize: "9px", fontFamily: "var(--font-space-mono)" }}>
+                            STORED
+                          </span>
+                          {f.locked && (
+                            <span
+                              className="tag"
+                              style={{
+                                background: "rgba(124,58,237,0.12)",
+                                color: "#a78bfa",
+                                borderColor: "rgba(124,58,237,0.3)",
+                                fontSize: "9px",
+                                fontFamily: "var(--font-space-mono)",
+                              }}
+                            >
+                              LOCKED
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 sm:gap-2 justify-end">
+                    <div className="flex items-center gap-2 sm:justify-end justify-start w-full sm:w-auto">
                       <button
-                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
+                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
                         onClick={() => window.open(f.link)}
                       >
                         Open
                       </button>
                       <button
-                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
+                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
                         onClick={() => copyRowLink(f.link, i)}
                       >
                         {copiedRows[i] ? "Copied!" : "Copy Link"}
                       </button>
                       <button
-                        className="btn-ghost px-2 sm:px-3 py-1.5 rounded-lg text-[10px] sm:text-xs"
+                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
                         style={{ color: "#ef4444" }}
                         onClick={() => deleteFile(i)}
                       >
@@ -1125,6 +1298,271 @@ export default function Dashboard() {
           <span style={{ fontFamily: "var(--font-space-mono)" }}>Shelby Network</span> · Built on Aptos · Front-end mockup via Next.js
         </p>
       </motion.main>
+      <AnimatePresence>
+        {showRpcModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowRpcModal(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+
+            {/* Modal Body */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: "spring", duration: 0.4 }}
+              className="glass rounded-2xl w-full max-w-lg relative overflow-hidden z-10"
+              style={{
+                border: "1px solid rgba(0, 229, 255, 0.3)",
+                background: "rgba(10, 10, 15, 0.95)",
+                boxShadow: "0 0 30px rgba(0, 229, 255, 0.15)",
+              }}
+            >
+              {/* Header */}
+              <div className="px-6 py-5 border-b border-[rgba(255,255,255,0.08)] flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--shelby-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                  </svg>
+                  <span className="font-bold text-white tracking-wide" style={{ fontFamily: "var(--font-space-mono)", fontSize: "14px" }}>
+                    Shelbynet RPC Configuration
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowRpcModal(false)}
+                  className="text-white/60 hover:text-white transition-colors"
+                  style={{ background: "none", border: "none", cursor: "pointer" }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 max-h-[70vh] overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+                
+                {/* Option 1: Automatic Addition */}
+                <div 
+                  className="mb-6 p-4 rounded-xl border relative overflow-hidden transition-all hover:border-[rgba(0,229,255,0.4)]"
+                  style={{
+                    background: "linear-gradient(135deg, rgba(0, 229, 255, 0.04) 0%, rgba(124, 58, 237, 0.04) 100%)",
+                    borderColor: "rgba(0, 229, 255, 0.15)"
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <span 
+                      className="px-2 py-0.5 rounded text-[10px] font-bold" 
+                      style={{ background: "rgba(0, 229, 255, 0.15)", color: "var(--shelby-accent)", fontFamily: "var(--font-space-mono)" }}
+                    >
+                      OPTION 1
+                    </span>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider" style={{ fontFamily: "var(--font-space-mono)" }}>
+                      Connect Automatically (Recommended)
+                    </h4>
+                  </div>
+                  <p className="text-xs leading-relaxed mb-4 text-white/70">
+                    Add and switch to the Shelbynet network instantly via your connected AIP-62 standard wallet.
+                  </p>
+                  <p className="text-[10px] leading-relaxed mb-4 text-white/40 italic">
+                    Note: Petra Wallet does not support automatically adding custom networks. If you are using Petra, please add the network manually using Option 2 below.
+                  </p>
+
+                  {!connected ? (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[11px] text-amber-400 italic">
+                        * Please connect your wallet first in the top right corner.
+                      </p>
+                      <button
+                        onClick={connectWallet}
+                        className="btn-primary py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer w-full transition-all hover:opacity-95"
+                        style={{
+                          background: "linear-gradient(135deg, #7c3aed, #6d28d9)",
+                          color: "white",
+                          border: "none"
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        Connect Wallet
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      <button
+                        onClick={handleAutoAddRpc}
+                        disabled={autoAddLoading || autoAddSuccess}
+                        className="py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all w-full"
+                        style={{
+                          background: autoAddSuccess 
+                            ? "rgba(0, 255, 148, 0.2)" 
+                            : "linear-gradient(135deg, #00e5ff, #00b0ff)",
+                          border: autoAddSuccess 
+                            ? "1px solid rgba(0, 255, 148, 0.4)" 
+                            : "none",
+                          color: autoAddSuccess ? "var(--shelby-green)" : "#0b0f19",
+                          opacity: autoAddLoading ? 0.7 : 1,
+                          boxShadow: autoAddSuccess ? "none" : "0 0 12px rgba(0, 229, 255, 0.3)"
+                        }}
+                      >
+                        {autoAddLoading ? (
+                          <>
+                            <div className="dot-pulse" style={{ background: "#0b0f19", boxShadow: "0 0 6px #0b0f19" }}></div>
+                            <span>Connecting network...</span>
+                          </>
+                        ) : autoAddSuccess ? (
+                          <>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            <span>Network successfully changed!</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                            </svg>
+                            <span>Add & Switch to Shelbynet</span>
+                          </>
+                        )}
+                      </button>
+
+                      {autoAddError && (
+                        <div 
+                          className="p-2.5 rounded-lg text-[11px] leading-normal flex items-start gap-1.5"
+                          style={{
+                            background: "rgba(239, 68, 68, 0.08)",
+                            border: "1px solid rgba(239, 68, 68, 0.2)",
+                            color: "#ef4444"
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                          </svg>
+                          <span>{autoAddError}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Option 2: Manual Addition */}
+                <div 
+                  className="p-4 rounded-xl border"
+                  style={{
+                    background: "rgba(255, 255, 255, 0.01)",
+                    borderColor: "rgba(255, 255, 255, 0.06)"
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <span 
+                      className="px-2 py-0.5 rounded text-[10px] font-bold" 
+                      style={{ background: "rgba(255, 255, 255, 0.08)", color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}
+                    >
+                      OPTION 2
+                    </span>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider" style={{ fontFamily: "var(--font-space-mono)" }}>
+                      Manual Configuration (Copy Details)
+                    </h4>
+                  </div>
+                  
+                  <p className="text-xs leading-relaxed mb-4 text-white/50">
+                    Use the details below if your wallet does not support auto-switch or if you want to set it up manually.
+                  </p>
+
+                  {/* Copyable Fields */}
+                  <div className="space-y-3.5 mb-5">
+                    {[
+                      { label: "Network Name", value: "Shelbynet", key: "name" },
+                      { label: "Node URL (RPC)", value: "https://api.shelbynet.shelby.xyz/v1", key: "rpc" },
+                      { label: "Chain ID", value: "113", key: "chainId" },
+                      { label: "Token Symbol", value: "APT", key: "symbol" },
+                      { label: "Block Explorer", value: "https://explorer.shelby.xyz/shelbynet", key: "explorer" },
+                    ].map((field) => (
+                      <div key={field.key} className="flex flex-col gap-1">
+                        <span className="text-[9px] font-bold tracking-wider text-white/40 uppercase" style={{ fontFamily: "var(--font-space-mono)" }}>
+                          {field.label}
+                        </span>
+                        <div
+                          className="flex items-center justify-between p-2 rounded-lg border transition-all hover:border-[rgba(0,229,255,0.15)]"
+                          style={{
+                            background: "rgba(255,255,255,0.01)",
+                            borderColor: "rgba(255,255,255,0.04)"
+                          }}
+                        >
+                          <span className="text-[11px] font-medium text-white/90 break-all pr-2" style={{ fontFamily: "var(--font-space-mono)" }}>
+                            {field.value}
+                          </span>
+                          <button
+                            onClick={() => copyRpcField(field.key, field.value)}
+                            className="p-1 rounded transition-colors hover:bg-white/5 flex items-center justify-center shrink-0"
+                            style={{ background: "none", border: "none", cursor: "pointer" }}
+                            title="Copy field"
+                          >
+                            {copiedFields[field.key] ? (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--shelby-green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                              </svg>
+                            ) : (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/40">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Instructions */}
+                  <div className="border-t border-[rgba(255,255,255,0.06)] pt-4">
+                    <h5 className="text-[11px] font-bold text-white mb-2" style={{ fontFamily: "var(--font-space-mono)" }}>
+                      Manual Guide for Petra Wallet:
+                    </h5>
+                    <ol className="list-decimal pl-4 space-y-1.5 text-[11px]" style={{ color: "var(--shelby-muted)", lineHeight: "1.4" }}>
+                      <li>Open the **Petra Wallet** extension or app.</li>
+                      <li>Click **Settings (gear icon)** in the bottom-right corner.</li>
+                      <li>Select the **Network** menu.</li>
+                      <li>Click the **Add Custom Network** button.</li>
+                      <li>Copy and paste the fields above into the respective inputs, then save.</li>
+                      <li>Ensure **Shelbynet** is selected as the active network in your wallet.</li>
+                    </ol>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Footer */}
+              <div className="px-6 py-4 border-t border-[rgba(255,255,255,0.08)] flex justify-end bg-black/40">
+                <button
+                  onClick={() => setShowRpcModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white/80 hover:text-white transition-colors"
+                  style={{
+                    background: "rgba(255,255,255,0.05)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    cursor: "pointer"
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <WalletSelectorModal isOpen={showWalletModal} onClose={() => setShowWalletModal(false)} />
       <DebugConsole />
     </>
   );

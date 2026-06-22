@@ -7,6 +7,7 @@ import { useAptBalance, useViewModule } from "@aptos-labs/react";
 import { AccountAddress, Aptos as AptosClient, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { useBlobMetadata, useShelbyClient } from "@shelby-protocol/react";
 import { DebugConsole } from "@/components/DebugConsole";
+import { WalletSelectorModal } from "@/components/WalletSelectorModal";
 
 // Initialize Aptos client outside component to avoid recreation
 const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
@@ -83,6 +84,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
     }
   }, [metadataError]);
   // Read lock metadata from localStorage (set by dashboard when user locks a file)
+  const [showWalletModal, setShowWalletModal] = useState(false);
   const [lockInfo, setLockInfo] = useState<{ locked: boolean; price: number } | null>(null);
   
   useEffect(() => {
@@ -171,20 +173,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
 
   const connectWallet = async () => {
     if (!connected) {
-      try {
-        await connect("Petra");
-      } catch (err: any) {
-        if (err.name === "WalletNotReadyError" || err.name === "WalletNotFoundError") {
-          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-          if (isMobile) {
-            window.location.href = `https://petra.app/explore?link=${encodeURIComponent(window.location.href)}`;
-          } else {
-            window.open("https://petra.app/", "_blank");
-          }
-        } else {
-          console.error("Connection error:", err);
-        }
-      }
+      setShowWalletModal(true);
     } else {
       disconnect();
     }
@@ -243,8 +232,8 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
   return (
     <>
       <nav className="glass sticky top-0 z-50 border-t-0 border-l-0 border-r-0">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3 overflow-hidden">
+        <div className="max-w-4xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-1.5 sm:gap-3 overflow-hidden">
             <div
               style={{
                 width: "24px",
@@ -265,14 +254,19 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
             </span>
             <span className="tag hidden md:inline-block" style={{ fontFamily: 'var(--font-space-mono)' }}>APTOS</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
-              className={`btn-wallet px-4 py-2 rounded-lg font-medium text-sm ${connected ? "connected" : ""}`}
+              className={`btn-wallet px-2 py-1.5 sm:px-4 sm:py-2 rounded-lg font-medium text-xs sm:text-sm ${connected ? "connected" : ""}`}
               onClick={connectWallet}
               disabled={isLoading}
               style={{ fontFamily: 'var(--font-space-mono)' }}
             >
-              {isLoading ? "Connecting…" : connected ? address : "Connect Wallet"}
+              {isLoading ? "Connecting…" : connected ? address : (
+                <>
+                  <span className="hidden sm:inline">Connect Wallet</span>
+                  <span className="sm:hidden">Connect</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -453,6 +447,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
            Powered by Shelby Protocol on Aptos
         </p>
       </motion.main>
+      <WalletSelectorModal isOpen={showWalletModal} onClose={() => setShowWalletModal(false)} />
       <DebugConsole />
     </>
   );
