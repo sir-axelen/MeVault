@@ -16,7 +16,7 @@ const spaceMono = Space_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "shelby X axel",
+  title: "MeVault",
   description: "Decentralized Real-Time Storage on Aptos",
 };
 

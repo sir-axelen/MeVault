@@ -57,7 +57,7 @@ export function WalletSelectorModal({ isOpen, onClose }: WalletSelectorModalProp
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: "spring", duration: 0.4 }}
-            className="glass rounded-2xl w-full max-w-sm relative overflow-hidden z-10"
+            className="glass rounded-2xl w-full max-w-sm relative overflow-hidden z-10 max-h-[85vh] flex flex-col"
             style={{
               border: "1px solid rgba(0, 229, 255, 0.3)",
               background: "rgba(10, 10, 15, 0.95)",
@@ -65,7 +65,7 @@ export function WalletSelectorModal({ isOpen, onClose }: WalletSelectorModalProp
             }}
           >
             {/* Header */}
-            <div className="px-6 py-5 border-b border-[rgba(255,255,255,0.08)] flex items-center justify-between">
+            <div className="px-6 py-5 border-b border-[rgba(255,255,255,0.08)] flex items-center justify-between shrink-0">
               <span className="font-bold text-white tracking-wide text-sm" style={{ fontFamily: "var(--font-space-mono)" }}>
                 Select Wallet
               </span>
@@ -82,7 +82,7 @@ export function WalletSelectorModal({ isOpen, onClose }: WalletSelectorModalProp
             </div>
 
             {/* Wallet Options list */}
-            <div className="p-6 space-y-3">
+            <div className="p-6 space-y-3 overflow-y-auto flex-1" style={{ scrollbarWidth: "thin" }}>
               {wallets.map((wallet) => {
                 const isInstalled = wallet.readyState === "Installed";
                 return (

@@ -250,7 +250,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
               <img src="/axel.png" alt="Axel" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
             <span className="font-bold text-white text-xs sm:text-sm tracking-tight whitespace-nowrap" style={{ fontFamily: 'var(--font-space-mono)' }}>
-              shelby X axel
+              MeVault
             </span>
             <span className="tag hidden md:inline-block" style={{ fontFamily: 'var(--font-space-mono)' }}>APTOS</span>
           </div>

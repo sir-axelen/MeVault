@@ -15,7 +15,7 @@ export default function LandingPage() {
             <img src="/axel.png" alt="Axel" className="w-full h-full object-cover" />
           </div>
           <span className="text-white font-bold text-xl tracking-wide">
-            shelby X axel
+            MeVault
           </span>
         </div>
       </nav>
