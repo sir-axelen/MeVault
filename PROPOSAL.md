@@ -1,10 +1,10 @@
-# Collaboration Proposal: Shelby X Axel
+# Collaboration Proposal: Shelby X MeVault
 
 **To: The Shelby Team**
 **From: Axel Team**
 
 ## Project Overview
-We have developed **Shelby X Axel**, a decentralized hot storage and data-sharing dashboard built on the Aptos blockchain. This project is more than just a storage interface; it is a real-time data ecosystem prioritizing speed, security, and a premium user experience.
+We have developed **Shelby X MeVault**, a decentralized hot storage and data-sharing dashboard built on the Aptos blockchain. This project is more than just a storage interface; it is a real-time data ecosystem prioritizing speed, security, and a premium user experience.
 
 ## Technical Excellence
 Our commitment to building a robust and scalable infrastructure is reflected in our implementation:

@@ -1,6 +1,6 @@
-# shelby X axel
+# MeVault
 
-Shelby Protocol is a decentralized data storage and sharing dashboard built on the Aptos blockchain. This Next.js application allows users to authenticate using the Petra Wallet and manage their data securely on-chain.
+MeVault is a decentralized hot storage and sharing dashboard built on the Aptos blockchain. This Next.js application allows users to manage their data securely on-chain with premium aesthetics.
 
 ## 🚀 Features
 
@@ -10,13 +10,13 @@ Shelby Protocol is a decentralized data storage and sharing dashboard built on t
 - **Modern UI**: Styled with a hybrid of Tailwind CSS and Custom Vanilla CSS for premium aesthetics and glassmorphism effects.
 - **Stable Wallet Integration**: Enhanced Petra Wallet support with `autoConnect` and robust error handling across mobile, tablet, and desktop devices.
 - **File Upload & Sharing**: Client-side decentralized uploads with instant link generation.
-- **Paywall Functionality**: Lock files behind APT payments for monetization.
+- **Paywall Functionality**: Lock files behind APT payments for monetization (Simulated mockup flow).
 - **Real-time Progress**: Visual upload progress indicators.
 
 ## 📁 Project Structure
 
 - `/src`: Contains the frontend application, Next.js routes, UI components, and wallet integration logic.
-- `/contracts`: Contains the Move smart contracts for the Shelby Protocol.
+- `/contracts`: Contains the Move smart contracts for MeVault.
 - `/public`: Static assets like fonts and icons.
 
 ## 🛠️ Tech Stack
@@ -48,19 +48,11 @@ Shelby Protocol is a decentralized data storage and sharing dashboard built on t
 2. Install dependencies:
    ```bash
    npm install
-   # or
-   yarn install
-   # or
-   pnpm install
    ```
 
 3. Run the development server:
    ```bash
    npm run dev
-   # or
-   yarn dev
-   # or
-   pnpm dev
    ```
 
 4. Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
@@ -69,14 +61,10 @@ Shelby Protocol is a decentralized data storage and sharing dashboard built on t
 
 This Next.js app can be published publicly with Vercel in just a few steps:
 
-1. Push your code to GitHub (already done).
+1. Push your code to GitHub.
 2. Go to https://vercel.com and sign in with GitHub.
-3. Create a new project and select `shelby-share-dapp`.
+3. Create a new project and select the repository.
 4. Leave the default Next.js settings and deploy.
-
-After deployment, Vercel will provide a public URL that everyone can access.
-
-If you prefer a different host, the app also works on any Next.js-compatible platform.
 
 ## 📜 Smart Contracts
 
@@ -90,13 +78,7 @@ aptos move test
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
-
-### Development Guidelines
-
-- Follow the existing code style and TypeScript conventions.
-- Test your changes locally before submitting a PR.
-- Update documentation as needed.
+Contributions, issues, and feature requests are welcome!
 
 ## 📄 License
 
