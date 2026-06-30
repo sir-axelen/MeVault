@@ -9,7 +9,7 @@ import { useAptBalance } from "@aptos-labs/react";
 // Initialize Aptos client using default SHELBYNET (matching the working upload flow)
 const aptosConfig = new AptosConfig({ network: Network.SHELBYNET });
 const aptos = new AptosClient(aptosConfig);
-import { useShelbyClient, useEncodeBlobs, useRegisterCommitments } from "@shelby-protocol/react";
+import { useShelbyClient, useEncodeBlobs, useRegisterCommitments, useAccountBlobs } from "@shelby-protocol/react";
 import { DebugConsole } from "@/components/DebugConsole";
 import { WalletSelectorModal } from "@/components/WalletSelectorModal";
 
@@ -18,6 +18,7 @@ type FileRecord = {
   size: string;
   link: string;
   locked: boolean;
+  expiresAt?: number;
 };
 
 const uploadToShelbyRPC = async (account: string, blobName: string, blobData: Uint8Array, onProgress?: (pct: number) => void) => {
@@ -65,6 +66,16 @@ export default function Dashboard() {
   const shelbyClient = useShelbyClient();
   const encodeBlobs = useEncodeBlobs();
   const registerCommitments = useRegisterCommitments({ client: shelbyClient });
+
+  const accountAddrStr = account?.address
+    ? (typeof account.address === "string" ? account.address : (account.address as any).toString())
+    : "";
+
+  const { data: accountBlobs, refetch: refetchAccountBlobs } = useAccountBlobs({
+    account: accountAddrStr,
+    client: shelbyClient,
+    enabled: !!accountAddrStr
+  });
   const { data: aptBalance, isLoading: balanceLoading } = useAptBalance();
   const isLoading = walletLoading; // Don't block UI with balance loading
 
@@ -242,6 +253,44 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, [faucetCooldown]);
 
+  const [extendingMap, setExtendingMap] = useState<Record<string, boolean>>({});
+
+  const extendBlobExpiration = async (fileName: string) => {
+    if (!connected || !signAndSubmitTransaction) {
+      alert("Please connect your wallet first.");
+      return;
+    }
+    setExtendingMap((prev) => ({ ...prev, [fileName]: true }));
+    try {
+      const newExpirationMicros = Date.now() * 1000 + 47.95 * 60 * 60 * 1000000;
+      console.log(`Extending expiration for blob: ${fileName} to ${newExpirationMicros}`);
+      const tx = await signAndSubmitTransaction({
+        data: {
+          function: "0x85fdb9a176ab8ef1d9d9c1b60d60b3924f0800ac1de1cc2085fb0b8bb4988e6a::blob_metadata::increase_expiration_time",
+          functionArguments: [
+            fileName,
+            String(newExpirationMicros)
+          ]
+        }
+      });
+      console.log("Extend transaction submitted:", tx.hash);
+      await aptos.waitForTransaction({ transactionHash: tx.hash });
+      setFiles((prev) => 
+        prev.map(f => f.name === fileName 
+          ? { ...f, expiresAt: Date.now() + 47.95 * 60 * 60 * 1000 } 
+          : f
+        )
+      );
+      await refetchAccountBlobs();
+      alert("✓ Blob expiration extended successfully!");
+    } catch (err: any) {
+      console.error("Extend expiration error:", err);
+      alert(`Failed to extend expiration: ${err.message || err.toString()}`);
+    } finally {
+      setExtendingMap((prev) => ({ ...prev, [fileName]: false }));
+    }
+  };
+
   const deleteFile = (index: number) => {
     const newFiles = [...files];
     newFiles.splice(index, 1);
@@ -251,6 +300,26 @@ export default function Dashboard() {
   const dismissGuide = () => {
     setShowGuide(false);
     localStorage.setItem("shelby_hide_guide", "true");
+  };
+
+  const getExpirationInfo = (blob: any, localExpiresAt?: number) => {
+    const expiresAtMs = blob && blob.expirationMicros
+      ? (blob.expirationMicros / 1000)
+      : localExpiresAt;
+
+    if (!expiresAtMs) return null;
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      return { status: "expired", label: "Expired" };
+    }
+    const totalMinutes = Math.floor(remainingMs / (60 * 1000));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours > 0) {
+      return { status: "active", label: `Expires in: ${hours}h ${minutes}m` };
+    } else {
+      return { status: "warning", label: `Expires in: ${minutes}m` };
+    }
   };
 
   const connectWallet = async () => {
@@ -388,7 +457,7 @@ export default function Dashboard() {
       const cleanFileName = currentFile.name.replace(/\s+/g, '_');
       const accountAddress = typeof account.address === 'string' ? account.address : account.address.toString();
       
-      const expirationMicros = Date.now() * 1000 + 30 * 24 * 60 * 60 * 1000000;
+      const expirationMicros = Date.now() * 1000 + 47.9 * 60 * 60 * 1000000;
 
       setProgressLabel("Encoding file commitments...");
       setProgressPct(30);
@@ -469,7 +538,7 @@ export default function Dashboard() {
 
     if (currentFile) {
       setFiles((prev) => [
-        { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: false },
+        { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: false, expiresAt: Date.now() + 47.9 * 60 * 60 * 1000 },
         ...prev,
       ]);
     }
@@ -557,7 +626,7 @@ export default function Dashboard() {
       
       if (currentFile) {
         setFiles((prev) => [
-          { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: shouldLock },
+          { name: currentFile.name, size: formatBytes(currentFile.size), link: shareLink, locked: shouldLock, expiresAt: Date.now() + 47.9 * 60 * 60 * 1000 },
           ...prev,
         ]);
       }
@@ -1208,87 +1277,125 @@ export default function Dashboard() {
           ) : (
             <div className="divide-y divide-transparent">
               <AnimatePresence>
-                {files.map((f, i) => (
-                  <motion.div 
-                    key={f.link}
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="file-row px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div className="flex items-center gap-4 min-w-0 flex-1">
-                      <div
-                        style={{
-                          width: "34px",
-                          height: "34px",
-                          background: "rgba(0,229,255,0.08)",
-                          border: "1px solid rgba(0,229,255,0.15)",
-                          borderRadius: "8px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                          <path
-                            d="M3 2h7l3 3v9H3V2z"
-                            fill="rgba(0,229,255,0.15)"
-                            stroke="var(--shelby-accent)"
-                            strokeWidth="1.2"
-                          />
-                          <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
-                        </svg>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{f.name}</p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
-                            {f.size}
-                          </span>
-                          <span className="tag tag-green" style={{ fontSize: "9px", fontFamily: "var(--font-space-mono)" }}>
-                            STORED
-                          </span>
-                          {f.locked && (
-                            <span
-                              className="tag"
-                              style={{
-                                background: "rgba(124,58,237,0.12)",
-                                color: "#a78bfa",
-                                borderColor: "rgba(124,58,237,0.3)",
-                                fontSize: "9px",
-                                fontFamily: "var(--font-space-mono)",
-                              }}
-                            >
-                              LOCKED
+                {files.map((f, i) => {
+                  const matchingBlob = accountBlobs?.find(b =>
+                    b.name === f.name ||
+                    f.link.endsWith(`/${encodeURIComponent(b.name)}`) ||
+                    f.link.endsWith(`/${b.name}`)
+                  );
+                  const exp = getExpirationInfo(matchingBlob, f.expiresAt);
+
+                  return (
+                    <motion.div 
+                      key={f.link}
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="file-row px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                    >
+                      <div className="flex items-center gap-4 min-w-0 flex-1">
+                        <div
+                          style={{
+                            width: "34px",
+                            height: "34px",
+                            background: "rgba(0,229,255,0.08)",
+                            border: "1px solid rgba(0,229,255,0.15)",
+                            borderRadius: "8px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path
+                              d="M3 2h7l3 3v9H3V2z"
+                              fill="rgba(0,229,255,0.15)"
+                              stroke="var(--shelby-accent)"
+                              strokeWidth="1.2"
+                            />
+                            <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-white truncate">{f.name}</p>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-xs" style={{ color: "var(--shelby-muted)", fontFamily: "var(--font-space-mono)" }}>
+                              {f.size}
                             </span>
-                          )}
+                            <span className="tag tag-green" style={{ fontSize: "9px", fontFamily: "var(--font-space-mono)" }}>
+                              STORED
+                            </span>
+                            {f.locked && (
+                              <span
+                                className="tag"
+                                style={{
+                                  background: "rgba(124,58,237,0.12)",
+                                  color: "#a78bfa",
+                                  borderColor: "rgba(124,58,237,0.3)",
+                                  fontSize: "9px",
+                                  fontFamily: "var(--font-space-mono)",
+                                }}
+                              >
+                                LOCKED
+                              </span>
+                            )}
+                            {exp && (
+                              <span
+                                className={`tag ${exp.status === 'expired' ? 'tag-red' : exp.status === 'warning' ? 'tag-warning' : ''}`}
+                                style={{
+                                  background: exp.status === 'expired' ? 'rgba(239,68,68,0.12)' : exp.status === 'warning' ? 'rgba(245,158,11,0.12)' : 'rgba(0,229,255,0.08)',
+                                  color: exp.status === 'expired' ? '#f87171' : exp.status === 'warning' ? '#fbbf24' : 'var(--shelby-accent)',
+                                  borderColor: exp.status === 'expired' ? 'rgba(239,68,68,0.3)' : exp.status === 'warning' ? 'rgba(245,158,11,0.3)' : 'rgba(0,229,255,0.2)',
+                                  fontSize: "9px",
+                                  fontFamily: "var(--font-space-mono)",
+                                }}
+                              >
+                                {exp.label.toUpperCase()}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2 sm:justify-end justify-start w-full sm:w-auto">
-                      <button
-                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
-                        onClick={() => window.open(f.link)}
-                      >
-                        Open
-                      </button>
-                      <button
-                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
-                        onClick={() => copyRowLink(f.link, i)}
-                      >
-                        {copiedRows[i] ? "Copied!" : "Copy Link"}
-                      </button>
-                      <button
-                        className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
-                        style={{ color: "#ef4444" }}
-                        onClick={() => deleteFile(i)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </motion.div>
-                ))}
+                      <div className="flex items-center gap-2 sm:justify-end justify-start w-full sm:w-auto flex-wrap">
+                        {connected && (
+                          <button
+                            className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
+                            style={{
+                              background: "rgba(0, 229, 255, 0.05)",
+                              border: "1px solid rgba(0, 229, 255, 0.2)",
+                              color: "var(--shelby-accent)",
+                              cursor: extendingMap[f.name] ? "default" : "pointer"
+                            }}
+                            onClick={() => extendBlobExpiration(f.name)}
+                            disabled={extendingMap[f.name]}
+                          >
+                            {extendingMap[f.name] ? "Extending..." : "Renew (+48h)"}
+                          </button>
+                        )}
+                        <button
+                          className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
+                          onClick={() => window.open(f.link)}
+                        >
+                          Open
+                        </button>
+                        <button
+                          className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
+                          onClick={() => copyRowLink(f.link, i)}
+                        >
+                          {copiedRows[i] ? "Copied!" : "Copy Link"}
+                        </button>
+                        <button
+                          className="btn-ghost flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold"
+                          style={{ color: "#ef4444" }}
+                          onClick={() => deleteFile(i)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </motion.div>
+                  );
+                })}
               </AnimatePresence>
             </div>
           )}

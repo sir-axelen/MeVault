@@ -72,10 +72,56 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
     }
   })();
 
-  const { data: metadata, isLoading: metadataLoading, error: metadataError } = useBlobMetadata({
+  const { data: metadata, isLoading: metadataLoading, error: metadataError, refetch: refetchMetadata } = useBlobMetadata({
     account: ownerAddr,
     name: fileName
   });
+
+  const walletAddressStr = (() => {
+    if (!account?.address) return "";
+    const raw = account.address;
+    if (typeof raw === "string") return raw.trim();
+    if (raw && (raw as any).data) {
+      const d = (raw as any).data;
+      const b = Array.isArray(d) ? d : Object.values(d);
+      try { return AccountAddress.from(new Uint8Array(b as number[])).toString().trim(); } catch { return raw.toString().trim(); }
+    }
+    return raw.toString().trim();
+  })();
+
+  const isOwner = connected && walletAddressStr && ownerAddr && walletAddressStr.toLowerCase() === ownerAddr.toLowerCase();
+
+  const [extending, setExtending] = useState(false);
+  const [extendMsg, setExtendMsg] = useState("");
+
+  const handleExtend = async () => {
+    if (!connected || !signAndSubmitTransaction) return;
+    setExtending(true);
+    setExtendMsg("Preparing transaction...");
+    try {
+      const newExpirationMicros = Date.now() * 1000 + 47.95 * 60 * 60 * 1000000;
+      setExtendMsg("Awaiting wallet approval...");
+      const tx = await signAndSubmitTransaction({
+        data: {
+          function: "0x85fdb9a176ab8ef1d9d9c1b60d60b3924f0800ac1de1cc2085fb0b8bb4988e6a::blob_metadata::increase_expiration_time",
+          functionArguments: [
+            fileName,
+            String(newExpirationMicros)
+          ]
+        }
+      });
+      setExtendMsg("Confirming on blockchain...");
+      await aptos.waitForTransaction({ transactionHash: tx.hash });
+      await refetchMetadata();
+      setExtendMsg("✓ Expiration extended successfully!");
+      setTimeout(() => setExtendMsg(""), 3000);
+    } catch (err: any) {
+      console.error("Extend error:", err);
+      setExtendMsg(`✗ Failed: ${err.message || err.toString()}`);
+    } finally {
+      setExtending(false);
+    }
+  };
 
   // Log metadata errors but don't block the page — file may still be downloadable
   useEffect(() => {
@@ -170,6 +216,58 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
     }
     throw new Error(`Gateway download failed: ${lastError}`);
   };
+
+  const isImage = /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(fileData.name);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+
+  useEffect(() => {
+    if (metadataLoading) {
+      return;
+    }
+
+    let active = true;
+    const fetchPreview = async () => {
+      setPreviewLoading(true);
+      setPreviewError(false);
+      try {
+        let blobData: Blob;
+        try {
+          console.log("Fetching preview (SDK)...");
+          const blob = await shelbyClient.rpc.getBlob({
+            account: ownerAddr,
+            blobName: fileName
+          });
+          const response = new Response(blob.readable);
+          blobData = await response.blob();
+        } catch (e) {
+          console.warn("SDK preview fetch failed, trying direct RPC...", e);
+          try {
+            blobData = await fallbackDownload(ownerAddr, fileName);
+          } catch {
+            console.warn("RPC preview fetch failed, trying gateway...");
+            blobData = await gatewayDownload(ownerAddr, fileName);
+          }
+        }
+        if (active) {
+          const url = URL.createObjectURL(blobData);
+          setPreviewUrl(url);
+        }
+      } catch (err) {
+        console.error("Failed to load preview:", err);
+        if (active) setPreviewError(true);
+      } finally {
+        if (active) setPreviewLoading(false);
+      }
+    };
+
+    fetchPreview();
+
+    return () => {
+      active = false;
+    };
+  }, [ownerAddr, fileName, metadataLoading, lockInfo?.locked, unlocked]);
 
   const connectWallet = async () => {
     if (!connected) {
@@ -291,28 +389,60 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
         ) : (
           <div className="glass rounded-2xl p-8 mb-5 text-center">
           <div className="flex justify-center mb-6">
-             <div
-                style={{
-                  width: "64px",
-                  height: "64px",
-                  background: "rgba(0,229,255,0.08)",
-                  border: "1px solid rgba(0,229,255,0.15)",
-                  borderRadius: "16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <svg width="28" height="28" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 2h7l3 3v9H3V2z"
-                    fill="rgba(0,229,255,0.15)"
-                    stroke="var(--shelby-accent)"
-                    strokeWidth="1.2"
-                  />
-                  <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
-                </svg>
-              </div>
+             {isImage && previewUrl ? (
+               <motion.div
+                 initial={{ opacity: 0, scale: 0.9 }}
+                 animate={{ opacity: 1, scale: 1 }}
+                 className="relative group cursor-pointer"
+                 style={{
+                   width: "120px",
+                   height: "120px",
+                   borderRadius: "16px",
+                   overflow: "hidden",
+                   border: "2px solid rgba(0,229,255,0.4)",
+                   boxShadow: "0 0 20px rgba(0,229,255,0.2)",
+                 }}
+                 onClick={() => window.open(previewUrl)}
+               >
+                 <img
+                   src={previewUrl}
+                   alt={fileData.name}
+                   className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                 />
+                 <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                     <path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                   </svg>
+                 </div>
+               </motion.div>
+             ) : (
+               <div
+                  style={{
+                    width: "64px",
+                    height: "64px",
+                    background: "rgba(0,229,255,0.08)",
+                    border: "1px solid rgba(0,229,255,0.15)",
+                    borderRadius: "16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {previewLoading ? (
+                    <div className="dot-pulse"></div>
+                  ) : (
+                    <svg width="28" height="28" viewBox="0 0 16 16" fill="none">
+                      <path
+                        d="M3 2h7l3 3v9H3V2z"
+                        fill="rgba(0,229,255,0.15)"
+                        stroke="var(--shelby-accent)"
+                        strokeWidth="1.2"
+                      />
+                      <path d="M10 2v3h3" stroke="var(--shelby-accent)" strokeWidth="1.2" />
+                    </svg>
+                  )}
+                </div>
+             )}
           </div>
           
           <h1 className="text-xl font-semibold text-white mb-2" style={{ fontFamily: 'var(--font-space-mono)' }}>
@@ -323,7 +453,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
           </p>
 
           <div className="p-4 rounded-xl mb-8" style={{ background: "rgba(0,0,0,0.2)", border: "1px solid var(--shelby-border)" }}>
-             {fileData.locked && !unlocked ? (
+           {fileData.locked && !unlocked && !isOwner ? (
                 <div>
                    <div className="flex items-center justify-center gap-2 mb-2">
                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--shelby-accent2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -355,7 +485,7 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
              )}
           </div>
 
-          {!unlocked ? (
+          {!unlocked && !isOwner ? (
              <button
               className="btn-primary w-full py-3 rounded-xl text-sm mb-3 flex items-center justify-center gap-2"
               onClick={handleUnlock}
@@ -373,41 +503,39 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
               onClick={async () => {
                 if (downloading) return;
                 setDownloading(true);
-                setStatusMsg("Downloading from Shelby nodes...");
+                setStatusMsg("Downloading...");
                 try {
-                  let blobData: Blob;
-                  try {
-                    // Try SDK method first
-                    console.log("Attempt 1/3: SDK getBlob", { account: ownerAddr, blobName: fileName });
-                    const blob = await shelbyClient.rpc.getBlob({
-                      account: ownerAddr,
-                      blobName: fileName
-                    });
-                    const response = new Response(blob.readable);
-                    blobData = await response.blob();
-                  } catch (sdkErr: any) {
-                    console.warn("SDK getBlob failed:", sdkErr.message);
-                    setStatusMsg("Retrying with direct RPC...");
+                  let url = previewUrl;
+                  if (!url) {
+                    setStatusMsg("Downloading from Shelby nodes...");
+                    let blobData: Blob;
                     try {
-                      // Fallback 2: direct fetch with API key
-                      console.log("Attempt 2/3: Direct RPC with API key");
-                      blobData = await fallbackDownload(ownerAddr, fileName);
-                    } catch (rpcErr: any) {
-                      console.warn("RPC fallback failed:", rpcErr.message);
-                      setStatusMsg("Retrying with Shelby Gateway...");
-                      // Fallback 3: Shelby Gateway (public, no auth)
-                      console.log("Attempt 3/3: Shelby Gateway (no auth)");
-                      blobData = await gatewayDownload(ownerAddr, fileName);
+                      console.log("Attempt 1/3: SDK getBlob", { account: ownerAddr, blobName: fileName });
+                      const blob = await shelbyClient.rpc.getBlob({
+                        account: ownerAddr,
+                        blobName: fileName
+                      });
+                      const response = new Response(blob.readable);
+                      blobData = await response.blob();
+                    } catch (sdkErr: any) {
+                      console.warn("SDK getBlob failed:", sdkErr.message);
+                      setStatusMsg("Retrying with direct RPC...");
+                      try {
+                        blobData = await fallbackDownload(ownerAddr, fileName);
+                      } catch (rpcErr: any) {
+                        console.warn("RPC fallback failed:", rpcErr.message);
+                        setStatusMsg("Retrying with Shelby Gateway...");
+                        blobData = await gatewayDownload(ownerAddr, fileName);
+                      }
                     }
+                    url = URL.createObjectURL(blobData);
                   }
-                  const url = URL.createObjectURL(blobData);
                   const a = document.createElement("a");
                   a.href = url;
                   a.download = fileData.name;
                   document.body.appendChild(a);
                   a.click();
                   a.remove();
-                  URL.revokeObjectURL(url);
                   setStatusMsg("✓ Download complete!");
                 } catch (err: any) {
                   console.error("All download attempts failed:", err);
@@ -442,8 +570,68 @@ export default function FileDownloadPage({ params }: { params: { hash: string | 
           )}
         </div>
         )}
+
+        {isOwner && metadata && (
+          <div className="glass rounded-2xl p-6 mb-5 border-[rgba(0,229,255,0.25)] bg-[rgba(0,229,255,0.02)] fade-in">
+            <div className="flex items-center justify-between mb-4">
+              <span className="section-label" style={{ color: "var(--shelby-accent)" }}>Owner Panel</span>
+              <span className="tag" style={{ background: "rgba(0, 229, 255, 0.08)", color: "var(--shelby-accent)", borderColor: "rgba(0, 229, 255, 0.25)", fontFamily: "var(--font-space-mono)" }}>
+                ACTIVE RENEWAL
+              </span>
+            </div>
+            <div className="flex flex-col gap-4 text-left">
+              <div>
+                <p className="text-xs text-white/50 mb-1 font-semibold">Expiration Time (Real-time)</p>
+                {(() => {
+                  const remMs = metadata.expirationMicros / 1000 - Date.now();
+                  if (remMs <= 0) {
+                    return (
+                      <p className="text-sm font-semibold text-red-400 font-mono">
+                        Expired (Must renew to enable storage nodes access)
+                      </p>
+                    );
+                  }
+                  const totalMins = Math.floor(remMs / 60000);
+                  const h = Math.floor(totalMins / 60);
+                  const m = totalMins % 60;
+                  return (
+                    <p className="text-sm font-semibold text-white font-mono">
+                      {h} hours, {m} minutes remaining
+                    </p>
+                  );
+                })()}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <button
+                  className="btn-primary w-full py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
+                  style={{
+                    background: "linear-gradient(135deg, var(--shelby-accent), #0099bb)",
+                    color: "#000",
+                    opacity: extending ? 0.7 : 1,
+                    cursor: extending ? "default" : "pointer"
+                  }}
+                  onClick={handleExtend}
+                  disabled={extending}
+                >
+                  {extending ? (
+                    <>
+                      <div className="dot-pulse !bg-black !shadow-none"></div>
+                      <span>Extending Expiration...</span>
+                    </>
+                  ) : "Extend Blob Expiration (+48 Hours)"}
+                </button>
+                {extendMsg && (
+                  <p className="text-[11px] text-center font-mono mt-1" style={{ color: extendMsg.startsWith("✓") ? "var(--shelby-green)" : extendMsg.startsWith("✗") ? "#f87171" : "var(--shelby-muted)" }}>
+                    {extendMsg}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         
-        <p className="text-center text-xs" style={{ color: "var(--shelby-muted)" }}>
+        <p className="text-center text-xs mt-4" style={{ color: "var(--shelby-muted)" }}>
            Powered by Shelby Protocol on Aptos
         </p>
       </motion.main>
